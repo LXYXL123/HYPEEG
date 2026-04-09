@@ -1,0 +1,79 @@
+# CGeom + TUAB standalone training config
+seed: 42
+master_port: 51103
+multitask: false
+model_type: cgeom
+fs: 256
+
+data:
+  batch_size: 32
+  num_workers: 4
+  datasets:
+    tuab: finetune
+
+model:
+  pretrained_path: null
+  output_dims: 320
+  hidden_dims: 64
+  depth: 10
+  mask_mode: binomial
+  downstream_mask: all_true
+
+  classifier_head:
+    head_type: avg_pool
+    hidden_dims: [128]
+    dropout: 0.3
+    attn_n_head: 4
+    attn_head_dim: 64
+    fusion_mode: dual
+    fusion_n_head: 4
+    fusion_head_dim: 64
+    fusion_use_rope: true
+    fusion_rope_theta: 10000.0
+    fusion_max_seq_len: 1024
+
+training:
+  max_epochs: 50
+  weight_decay: 0.01
+  max_grad_norm: 3.0
+
+  lr_schedule: onecycle
+  max_lr: 5e-4
+  encoder_lr_scale: 0.1
+  warmup_epochs: 5
+  warmup_scale: 1e-2
+  pct_start: 0.2
+  min_lr: 1e-6
+
+  freeze_encoder: false
+  use_amp: false
+  label_smoothing: 0.1
+
+  lora:
+    use_lora: false
+    lora_r: 8
+    lora_alpha: 16
+    lora_dropout: 0.0
+    lora_target_modules: [default]
+    lora_exclude_modules: null
+    lora_target_type: default
+    lora_scope: transformer
+    lora_lr_scale: 1.0
+
+logging:
+  experiment_name: cgeom_tuab
+  run_dir: assets/run
+  use_cloud: false
+  cloud_backend: wandb
+  project: cgeom
+  entity: null
+  api_key: null
+  offline: true
+  tags: [cgeom, tuab]
+  log_step_interval: 10
+  ckpt_interval: 1
+  save_best_only: true
+  save_last_checkpoint: true
+  monitor_split: eval
+  monitor_metric: balanced_acc
+  monitor_mode: max

@@ -1,0 +1,46 @@
+# Please install torch by official command in https://pytorch.org/get-started/locally/
+# IMPORTANT: torchaudio is not supported since torch 2.9, but it is required by braindecode
+
+# torch
+# torchaudio
+# torchvision
+
+# These packages are required in some scenarios but may cause conflicts with other packages
+# IMPORTANT: EEGNet and EEGConformer require braindecode package
+# IMPORTANT: captum can be installed with --no-deps option as it supports numpy > 2.0
+
+# braindecode
+# moabb
+# captum
+
+mne
+s3fs
+tqdm
+h5py
+dill
+pytz
+timm
+torch
+scipy
+numpy
+wandb
+plotly
+pyyaml
+pandas
+einops
+seaborn
+debugpy
+pyarrow
+comet_ml
+openpyxl
+pydantic
+mne-bids
+datasets
+omegaconf
+matplotlib
+safetensors
+multiprocess
+transformers
+scikit-learn
+huggingface_hub
+linear_attention_transformer

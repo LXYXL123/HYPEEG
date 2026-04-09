@@ -1,0 +1,9 @@
+fs: 256
+clean_middle_cache: false
+clean_shared_info: false
+num_preproc_arrow_writers: 4
+num_preproc_mid_workers: 8
+
+pretrain_datasets: []
+finetune_datasets:
+  bcic_2a: finetune
