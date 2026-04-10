@@ -95,9 +95,25 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
             nn.Linear(output_dims * 2, output_dims)
             for _ in config.bands
         ])
+        # Auxiliary pooled projections kept for diagnostics / optional alignment losses.
         self.raw_align_proj = nn.Linear(output_dims, output_dims) if config.use_raw_branch else None
         self.complex_align_proj = nn.Linear(output_dims * 2, output_dims)
-        self.relation_to_complex = nn.Linear(output_dims, output_dims * 2) if config.use_hyperbolic_branch else None
+
+        # Lightweight residual fusion:
+        # - raw branch directly contributes to the final representation via
+        #   [B, T, D] -> LayerNorm -> Linear -> [B, T, 2D]
+        # - relation branch stays as a global auxiliary modulator via
+        #   [B, D] -> LayerNorm -> Linear -> [B, 1, 2D]
+        self.raw_fusion_norm = nn.LayerNorm(output_dims) if config.use_raw_branch else None
+        self.proj_raw = nn.Linear(output_dims, output_dims * 2) if config.use_raw_branch else None
+
+        self.rel_fusion_norm = nn.LayerNorm(output_dims) if config.use_hyperbolic_branch else None
+        self.proj_rel = nn.Linear(output_dims, output_dims * 2) if config.use_hyperbolic_branch else None
+
+        # Keep complex features as the dominant path at initialization. The model
+        # can then gradually learn how much direct raw and relation residual it needs.
+        self.alpha = nn.Parameter(torch.tensor(0.1))
+        self.beta = nn.Parameter(torch.tensor(0.1))
         self.repr_dropout = nn.Dropout(p=0.1)
 
     def _resolve_mask(self, x, mask):
@@ -149,10 +165,30 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
             ]
             relation_global = self.hyperbolic_branch(h_raw, relation_bands)
 
-        main_repr = h_complex
+        raw_residual = None
+        if h_raw is not None:
+            # h_raw: [B, T, D] -> raw_residual: [B, T, 2D]
+            raw_residual = self.proj_raw(self.raw_fusion_norm(h_raw))
+
+        rel_residual = None
         if relation_global is not None:
-            relation_mod = self.relation_to_complex(relation_global).unsqueeze(1)
-            main_repr = main_repr + relation_mod
+            # relation_global: [B, D] -> rel_residual: [B, 1, 2D]
+            rel_residual = self.proj_rel(self.rel_fusion_norm(relation_global)).unsqueeze(1)
+
+        # Final fused representation:
+        # - h_complex:      [B, T, 2D]  (main spectral-complex path)
+        # - raw_residual:   [B, T, 2D]  (direct temporal residual path)
+        # - rel_residual:   [B, 1, 2D]  (global relation residual, broadcast on T)
+        # - main_repr:      [B, T, 2D]
+        #
+        # This keeps the hyperbolic relation branch, while making the raw branch
+        # directly visible to the classifier instead of only affecting the output
+        # through relation pooling.
+        main_repr = h_complex
+        if raw_residual is not None:
+            main_repr = main_repr + self.alpha * raw_residual
+        if rel_residual is not None:
+            main_repr = main_repr + self.beta * rel_residual
 
         raw_align = None
         if h_raw is not None:

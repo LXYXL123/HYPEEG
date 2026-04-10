@@ -15,7 +15,7 @@ model:
   pretrained_path: null
   output_dims: 320
   hidden_dims: 64
-  depth: 10
+  depth: 7
   bands:
     - [8.0, 13.0]
     - [13.0, 20.0]
@@ -23,7 +23,7 @@ model:
   use_raw_branch: true
   use_complex_branch: true
   use_hyperbolic_branch: true
-  share_band_encoder: false
+  share_band_encoder: true
   band_fusion_type: concat_linear
   hyperbolic_depth: 1
   hyperbolic_curvature: 1.0
@@ -45,7 +45,7 @@ model:
     fusion_max_seq_len: 1024
 
 training:
-  max_epochs: 50
+  max_epochs: 20
   weight_decay: 0.01
   max_grad_norm: 3.0
 
