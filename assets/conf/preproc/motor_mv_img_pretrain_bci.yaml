@@ -1,0 +1,12 @@
+fs: 256
+clean_middle_cache: true
+clean_shared_info: true
+num_preproc_arrow_writers: 4
+num_preproc_mid_workers: 8
+
+output_root: assets/data/pretrain
+
+pretrain_datasets: []
+pretrain_dataset_configs:
+  motor_mv_img: pretrain_bci
+finetune_datasets: {}

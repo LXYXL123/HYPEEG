@@ -15,7 +15,9 @@ class BasePreprocArgs(BaseModel):
     clean_shared_info: bool = False
     num_preproc_arrow_writers: int = 4
     num_preproc_mid_workers: int = 6
+    output_root: Optional[str] = None
     pretrain_datasets: list[str] = Field(default_factory=lambda: [])
+    pretrain_dataset_configs: dict[str, str] = Field(default_factory=lambda: {})
     finetune_datasets: dict[str, str] = Field(default_factory=lambda: {})
 
 

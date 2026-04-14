@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import time
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm
@@ -43,6 +44,7 @@ class TS2VecThreeBranchHypRelationCGeom:
         raw_mask_type='cosine',
         after_iter_callback=None,
         after_epoch_callback=None,
+        show_progress=False,
     ):
         super().__init__()
         self.device = device
@@ -97,10 +99,87 @@ class TS2VecThreeBranchHypRelationCGeom:
 
         self.after_iter_callback = after_iter_callback
         self.after_epoch_callback = after_epoch_callback
+        self.show_progress = show_progress
 
         self.n_epochs = 0
         self.n_iters = 0
         self.train_history = []
+
+    def _compute_pair_loss(self, x, net=None):
+        if net is None:
+            net = self._train_net
+
+        ts_l = x.size(1)
+        crop_l = np.random.randint(low=2 ** (self.temporal_unit + 1), high=ts_l + 1)
+        crop_left = np.random.randint(ts_l - crop_l + 1)
+        crop_right = crop_left + crop_l
+        crop_eleft = np.random.randint(crop_left + 1)
+        crop_eright = np.random.randint(low=crop_right, high=ts_l + 1)
+        crop_offset = np.random.randint(low=-crop_eleft, high=ts_l - crop_eright + 1, size=x.size(0))
+
+        view1 = net(
+            take_per_row(x, crop_offset + crop_eleft, crop_right - crop_eleft),
+            return_aux=True,
+        )
+        view1['main_repr'] = view1['main_repr'][:, -crop_l:]
+
+        view2 = net(
+            take_per_row(x, crop_offset + crop_left, crop_eright - crop_left),
+            return_aux=True,
+        )
+        view2['main_repr'] = view2['main_repr'][:, :crop_l]
+
+        return self.loss_module(view1, view2, temporal_unit=self.temporal_unit)
+
+    def evaluate_loss(self, eval_data, batch_size=None, verbose=False, desc='Pretrain eval'):
+        assert eval_data.ndim == 3
+        if batch_size is None:
+            batch_size = self.batch_size
+
+        eval_data = eval_data[~np.isnan(eval_data).all(axis=2).all(axis=1)]
+        eval_dataset = TensorDataset(torch.from_numpy(eval_data).to(torch.float))
+        eval_loader = DataLoader(eval_dataset, batch_size=min(batch_size, len(eval_dataset)), shuffle=False, drop_last=False)
+
+        org_training = self.net.training
+        self.net.eval()
+
+        loss_sum = 0.0
+        n_iters = 0
+        term_sums = {}
+        iterator = eval_loader
+        if verbose or self.show_progress:
+            iterator = tqdm(eval_loader, desc=desc, leave=True, dynamic_ncols=True)
+
+        with torch.no_grad():
+            for batch in iterator:
+                x = batch[0]
+                if self.max_train_length is not None and x.size(1) > self.max_train_length:
+                    window_offset = (x.size(1) - self.max_train_length) // 2
+                    x = x[:, window_offset: window_offset + self.max_train_length]
+                x = x.to(self.device)
+
+                loss, loss_terms = self._compute_pair_loss(x, net=self.net)
+                loss_sum += float(loss.item())
+                n_iters += 1
+                for key, value in loss_terms.items():
+                    term_sums[key] = term_sums.get(key, 0.0) + float(value)
+
+                if verbose or self.show_progress:
+                    postfix = {'loss': f'{loss.item():.6f}'}
+                    if 'loss_cgeom' in loss_terms:
+                        postfix['cgeom'] = f"{loss_terms['loss_cgeom']:.6f}"
+                    if 'loss_tf_align' in loss_terms:
+                        postfix['tf_align'] = f"{loss_terms['loss_tf_align']:.6f}"
+                    iterator.set_postfix(postfix)
+
+        self.net.train(org_training)
+        if n_iters < 1:
+            raise RuntimeError('No eval batches were processed.')
+
+        record = {'eval_loss_total': float(loss_sum / n_iters)}
+        for key, value in term_sums.items():
+            record[f'eval_{key}'] = float(value / n_iters)
+        return record
 
     def fit(self, train_data, n_epochs=None, n_iters=None, verbose=False):
         assert train_data.ndim == 3
@@ -143,8 +222,18 @@ class TS2VecThreeBranchHypRelationCGeom:
             n_epoch_iters = 0
             interrupted = False
             epoch_term_sums = {}
+            epoch_start_time = time.time()
 
-            for batch in train_loader:
+            iterator = train_loader
+            if self.show_progress:
+                iterator = tqdm(
+                    train_loader,
+                    desc=f"Pretrain epoch {self.n_epochs}",
+                    leave=True,
+                    dynamic_ncols=True,
+                )
+
+            for batch in iterator:
                 if n_iters is not None and self.n_iters >= n_iters:
                     interrupted = True
                     break
@@ -155,29 +244,8 @@ class TS2VecThreeBranchHypRelationCGeom:
                     x = x[:, window_offset: window_offset + self.max_train_length]
                 x = x.to(self.device)
 
-                ts_l = x.size(1)
-                crop_l = np.random.randint(low=2 ** (self.temporal_unit + 1), high=ts_l + 1)
-                crop_left = np.random.randint(ts_l - crop_l + 1)
-                crop_right = crop_left + crop_l
-                crop_eleft = np.random.randint(crop_left + 1)
-                crop_eright = np.random.randint(low=crop_right, high=ts_l + 1)
-                crop_offset = np.random.randint(low=-crop_eleft, high=ts_l - crop_eright + 1, size=x.size(0))
-
                 optimizer.zero_grad()
-
-                view1 = self._train_net(
-                    take_per_row(x, crop_offset + crop_eleft, crop_right - crop_eleft),
-                    return_aux=True,
-                )
-                view1['main_repr'] = view1['main_repr'][:, -crop_l:]
-
-                view2 = self._train_net(
-                    take_per_row(x, crop_offset + crop_left, crop_eright - crop_left),
-                    return_aux=True,
-                )
-                view2['main_repr'] = view2['main_repr'][:, :crop_l]
-
-                loss, loss_terms = self.loss_module(view1, view2, temporal_unit=self.temporal_unit)
+                loss, loss_terms = self._compute_pair_loss(x)
 
                 loss.backward()
                 optimizer.step()
@@ -188,6 +256,14 @@ class TS2VecThreeBranchHypRelationCGeom:
                 self.n_iters += 1
                 for key, value in loss_terms.items():
                     epoch_term_sums[key] = epoch_term_sums.get(key, 0.0) + float(value)
+
+                if self.show_progress:
+                    postfix = {'loss': f'{loss.item():.6f}'}
+                    if 'loss_cgeom' in loss_terms:
+                        postfix['cgeom'] = f"{loss_terms['loss_cgeom']:.6f}"
+                    if 'loss_tf_align' in loss_terms:
+                        postfix['tf_align'] = f"{loss_terms['loss_tf_align']:.6f}"
+                    iterator.set_postfix(postfix)
 
                 if self.after_iter_callback is not None:
                     self.after_iter_callback(self, loss.item())
@@ -200,12 +276,13 @@ class TS2VecThreeBranchHypRelationCGeom:
             epoch_record = {
                 'epoch': self.n_epochs,
                 'loss_total': float(cum_loss),
+                'epoch_time_sec': float(time.time() - epoch_start_time),
             }
             for key, value in epoch_term_sums.items():
                 epoch_record[key] = float(value / n_epoch_iters)
             self.train_history.append(epoch_record)
             if verbose:
-                loss_msg = f"Epoch #{self.n_epochs}: loss={cum_loss}"
+                loss_msg = f"Epoch #{self.n_epochs}: loss={cum_loss} time={epoch_record['epoch_time_sec']:.2f}s"
                 if 'loss_tf_align' in epoch_record:
                     loss_msg += f" tf_align={epoch_record['loss_tf_align']:.6f}"
                 if 'loss_raw_mask' in epoch_record:
@@ -216,7 +293,7 @@ class TS2VecThreeBranchHypRelationCGeom:
             self.n_epochs += 1
 
             if self.after_epoch_callback is not None:
-                self.after_epoch_callback(self, cum_loss)
+                self.after_epoch_callback(self, epoch_record)
 
         return loss_log
 

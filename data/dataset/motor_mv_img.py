@@ -75,6 +75,7 @@ class MotorMoveImagineBuilder(EEGDatasetBuilder):
     BUILDER_CONFIG_CLASS = MotorMoveImagineConfig
     BUILDER_CONFIGS = [
         BUILDER_CONFIG_CLASS(name='pretrain'),
+        BUILDER_CONFIG_CLASS(name='pretrain_bci', wnd_div_sec=4),
         BUILDER_CONFIG_CLASS(name='finetune', is_finetune=True, wnd_div_sec=4)
     ]
 
@@ -142,7 +143,12 @@ class MotorMoveImagineBuilder(EEGDatasetBuilder):
         return annotations
 
     def _divide_split(self, df: DataFrame) -> DataFrame:
-        if self.config.is_finetune:
+        if self.config.name == 'pretrain_bci':
+            # BCI pretraining keeps PhysioMI unlabeled and subject-separated.
+            # Use most subjects for train while holding out a small validation set.
+            df.loc[df['subject'].isin(np.arange(1, 100)), 'split'] = 'train'
+            df.loc[df['subject'].isin(np.arange(100, 110)), 'split'] = 'valid'
+        elif self.config.is_finetune:
             df.loc[df['subject'].isin(np.arange(70)), 'split'] = 'train'
             df.loc[df['subject'].isin(np.arange(70, 89)), 'split'] = 'valid'
             df.loc[df['subject'].isin(np.arange(89, 110)), 'split'] = 'test'

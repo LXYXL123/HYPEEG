@@ -143,14 +143,31 @@ class EEGDatasetBuilder(datasets.GeneratorBasedBuilder, ABC):
         BUILDER_CONFIG_CLASS(name='pretrain'),
         BUILDER_CONFIG_CLASS(name='finetune', is_finetune=True),]
 
-    def __init__(self, config_name='pretrain', fs: Optional[float] = None, **kwargs):
+    def __init__(
+            self,
+            config_name='pretrain',
+            fs: Optional[float] = None,
+            database_proc_root: Optional[str] = None,
+            **kwargs
+    ):
+        conf: EEGConfig = self.builder_configs.get(config_name)
+
+        # Keep the original processed-data root by default. Pretraining data can
+        # opt into a separate root, e.g. assets/data/pretrain, without changing
+        # finetune datasets under assets/data/processed.
+        if database_proc_root is None:
+            conf.database_proc_root = DATABASE_PROC_ROOT
+        else:
+            proc_root = database_proc_root
+            if not proc_root.startswith('s3://') and not os.path.isabs(proc_root):
+                proc_root = os.path.abspath(proc_root)
+            conf.database_proc_root = proc_root
+
         # Override sampling rate if specified
         if fs is not None:
-            self.builder_configs[config_name].apply_fs(float(fs))
+            conf.apply_fs(float(fs))
         else:
-            self.builder_configs[config_name].apply_fs(256.0)
-
-        conf: EEGConfig = self.builder_configs.get(config_name)
+            conf.apply_fs(256.0)
 
         # Arrow cache path is now directly from data_path (already includes dataset_name/fs_id)
         super().__init__(

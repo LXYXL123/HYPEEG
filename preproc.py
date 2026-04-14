@@ -1,5 +1,5 @@
 import logging
-from typing import Type
+from typing import Optional, Type
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -17,11 +17,14 @@ def prepare_dataset(
         conf: BasePreprocArgs,
         builder_cls: Type[EEGDatasetBuilder],
         dataset_name: str,
-        config_name: str
+        config_name: str,
+        output_root: Optional[str] = None,
 ):
     try:
         logger.info(f"Preparing dataset {dataset_name} {config_name} at fs={conf.fs}Hz...")
-        builder = builder_cls(config_name, fs=conf.fs)
+        if output_root:
+            logger.info(f"Using custom processed output root: {output_root}")
+        builder = builder_cls(config_name, fs=conf.fs, database_proc_root=output_root)
         if conf.clean_middle_cache:
             builder.clean_disk_cache(clean_shared_info=conf.clean_shared_info)
         builder.preproc(n_proc=conf.num_preproc_mid_workers)
@@ -35,12 +38,12 @@ def prepare_dataset(
 
 
 def preproc(conf: BasePreprocArgs):
-    dataset_names = conf.pretrain_datasets
-    dataset_configs = ['pretrain' for _ in dataset_names]
-    dataset_names.extend(conf.finetune_datasets.keys())
-    dataset_configs.extend(conf.finetune_datasets.values())
+    dataset_items: list[tuple[str, str, Optional[str]]] = []
+    dataset_items.extend((dataset_name, 'pretrain', conf.output_root) for dataset_name in conf.pretrain_datasets)
+    dataset_items.extend((dataset_name, config, conf.output_root) for dataset_name, config in conf.pretrain_dataset_configs.items())
+    dataset_items.extend((dataset_name, config, None) for dataset_name, config in conf.finetune_datasets.items())
 
-    for dataset, config in zip(dataset_names, dataset_configs):
+    for dataset, config, output_root in dataset_items:
         if dataset not in DATASET_SELECTOR.keys():
             raise ValueError(f"Dataset {dataset} is not supported.")
 
@@ -48,7 +51,7 @@ def preproc(conf: BasePreprocArgs):
         if config not in builder_cls.builder_configs.keys():
             raise ValueError(f"Config {config} is not supported for dataset {dataset}.")
 
-        prepare_dataset(conf, builder_cls, dataset, config)
+        prepare_dataset(conf, builder_cls, dataset, config, output_root=output_root)
 
 
 if __name__ == '__main__':
