@@ -55,12 +55,13 @@ class HyperbolicRelationBranch(nn.Module):
             return F.softplus(self.raw_curvature).to(dtype=self.input_proj.weight.dtype) + 1e-5
         return self.fixed_curvature.to(dtype=self.input_proj.weight.dtype)
 
-    def forward(self, h_raw: Optional[torch.Tensor], band_features: List[torch.Tensor]) -> torch.Tensor:
-        tokens = []
-        if h_raw is not None:
-            tokens.append(h_raw.mean(dim=1))
-        for band_feature in band_features:
-            tokens.append(band_feature.mean(dim=1))
+    def forward_global(self, tokens: List[torch.Tensor]) -> torch.Tensor:
+        """Model relations among pre-pooled global tokens.
+
+        Each token must be [B, D]. Relation-CGeom uses this for either the
+        default raw_global + complex_global path or experimental raw + band
+        global-token variants.
+        """
         if not tokens:
             raise ValueError('Relation branch requires at least one token source.')
 
@@ -72,3 +73,11 @@ class HyperbolicRelationBranch(nn.Module):
             x_hyp = layer(x_hyp, c)
         tokens_out = logmap0(x_hyp, c)
         return tokens_out.mean(dim=1)
+
+    def forward(self, h_raw: Optional[torch.Tensor], band_features: List[torch.Tensor]) -> torch.Tensor:
+        tokens = []
+        if h_raw is not None:
+            tokens.append(h_raw.mean(dim=1))
+        for band_feature in band_features:
+            tokens.append(band_feature.mean(dim=1))
+        return self.forward_global(tokens)

@@ -115,6 +115,15 @@ class RelationCGeomTrainer(AbstractTrainer):
             hyperbolic_depth=model_cfg.hyperbolic_depth,
             hyperbolic_curvature=model_cfg.hyperbolic_curvature,
             learnable_curvature=model_cfg.learnable_curvature,
+            use_raw_residual=model_cfg.use_raw_residual,
+            use_complex_residual=model_cfg.use_complex_residual,
+            use_hyper_relation=model_cfg.use_hyper_relation,
+            use_gated_raw_residual=model_cfg.use_gated_raw_residual,
+            use_gated_complex_residual=model_cfg.use_gated_complex_residual,
+            local_fusion_type=model_cfg.local_fusion_type,
+            relation_condition_type=model_cfg.relation_condition_type,
+            relation_gate_scale=model_cfg.relation_gate_scale,
+            relation_film_scale=model_cfg.relation_film_scale,
             mask_mode=model_cfg.mask_mode,
         )
 

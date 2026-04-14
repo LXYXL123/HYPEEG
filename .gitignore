@@ -25,3 +25,4 @@ data.lock
 
 *.ckpt
 *.log
+*.zip

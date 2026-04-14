@@ -1,6 +1,6 @@
-# Relation-CGeom + TUAB standalone training config
+# Relation-CGeom + BCIC2a standalone training config
 seed: 42
-master_port: 51103
+master_port: 51104
 multitask: false
 model_type: relation_cgeom
 fs: 256
@@ -9,7 +9,7 @@ data:
   batch_size: 32
   num_workers: 4
   datasets:
-    tuab: finetune
+    bcic_2a: finetune
 
 model:
   pretrained_path: null
@@ -82,7 +82,7 @@ training:
     lora_lr_scale: 1.0
 
 logging:
-  experiment_name: relation_cgeom_tuab
+  experiment_name: relation_cgeom_bcic2a
   run_dir: assets/run
   use_cloud: false
   cloud_backend: wandb
@@ -90,7 +90,7 @@ logging:
   entity: null
   api_key: null
   offline: true
-  tags: [relation_cgeom, tuab]
+  tags: [relation_cgeom, bcic_2a]
   log_step_interval: 10
   ckpt_interval: 1
   save_best_only: true

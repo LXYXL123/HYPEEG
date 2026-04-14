@@ -1,44 +1,18 @@
-# Relation-CGeom + TUAB standalone training config
+# EEGPT + BCIC2a standalone training config
 seed: 42
-master_port: 51103
+master_port: 51242
 multitask: false
-model_type: relation_cgeom
+model_type: eegpt
 fs: 256
 
 data:
   batch_size: 32
   num_workers: 4
   datasets:
-    tuab: finetune
+    bcic_2a: finetune
 
 model:
   pretrained_path: null
-  output_dims: 320
-  hidden_dims: 64
-  depth: 7
-  bands:
-    - [8.0, 13.0]
-    - [13.0, 20.0]
-    - [20.0, 30.0]
-  use_raw_branch: true
-  use_complex_branch: true
-  use_hyperbolic_branch: true
-  share_band_encoder: false
-  band_fusion_type: concat_linear
-  hyperbolic_depth: 1
-  hyperbolic_curvature: 1.0
-  learnable_curvature: true
-  use_raw_residual: true
-  use_complex_residual: false
-  use_hyper_relation: true
-  use_gated_raw_residual: true
-  use_gated_complex_residual: false
-  local_fusion_type: add
-  relation_condition_type: residual
-  relation_gate_scale: 0.1
-  relation_film_scale: 0.1
-  mask_mode: binomial
-  downstream_mask: all_true
 
   classifier_head:
     head_type: avg_pool
@@ -52,6 +26,28 @@ model:
     fusion_use_rope: true
     fusion_rope_theta: 10000.0
     fusion_max_seq_len: 1024
+
+  patch_size: 64
+  patch_stride: 32
+  embed_num: 4
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 4.0
+
+  dropout_rate: 0.1
+  attn_dropout_rate: 0.1
+  drop_path_rate: 0.1
+
+  init_std: 0.02
+  qkv_bias: true
+
+  use_channel_conv: false
+  conv_chan_dim: 22
+
+  linear_probe1_dim: 16
+  linear_probe1_max_norm: 1.0
+  linear_probe2_max_norm: 0.25
 
 training:
   max_epochs: 20
@@ -82,15 +78,15 @@ training:
     lora_lr_scale: 1.0
 
 logging:
-  experiment_name: relation_cgeom_tuab
+  experiment_name: eegpt_bcic2a
   run_dir: assets/run
   use_cloud: false
   cloud_backend: wandb
-  project: relation_cgeom
+  project: eegpt
   entity: null
   api_key: null
   offline: true
-  tags: [relation_cgeom, tuab]
+  tags: [eegpt, bcic_2a]
   log_step_interval: 10
   ckpt_interval: 1
   save_best_only: true

@@ -1,6 +1,6 @@
-# Relation-CGeom + TUAB standalone training config
+# Relation-CGeom + SEED standalone training config
 seed: 42
-master_port: 51103
+master_port: 51342
 multitask: false
 model_type: relation_cgeom
 fs: 256
@@ -9,7 +9,7 @@ data:
   batch_size: 32
   num_workers: 4
   datasets:
-    tuab: finetune
+    seed: finetune
 
 model:
   pretrained_path: null
@@ -17,9 +17,9 @@ model:
   hidden_dims: 64
   depth: 7
   bands:
-    - [8.0, 13.0]
-    - [13.0, 20.0]
-    - [20.0, 30.0]
+    - [4.0, 8.0]
+    - [8.0, 14.0]
+    - [14.0, 30.0]
   use_raw_branch: true
   use_complex_branch: true
   use_hyperbolic_branch: true
@@ -82,7 +82,7 @@ training:
     lora_lr_scale: 1.0
 
 logging:
-  experiment_name: relation_cgeom_tuab
+  experiment_name: relation_cgeom_seed
   run_dir: assets/run
   use_cloud: false
   cloud_backend: wandb
@@ -90,7 +90,7 @@ logging:
   entity: null
   api_key: null
   offline: true
-  tags: [relation_cgeom, tuab]
+  tags: [relation_cgeom, seed]
   log_step_interval: 10
   ckpt_interval: 1
   save_best_only: true

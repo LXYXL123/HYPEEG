@@ -193,8 +193,11 @@ class AbstractTrainer(ABC):
 
         name = get_specific_dirname()
         run_dir = args.run_dir
-        log_path = os.path.join(run_dir, 'log', 'baseline', self.model_type, name)
-        ckpt_path = os.path.join(run_dir, 'ckpt', 'baseline', self.model_type, name)
+        baseline_parts = ['baseline']
+        if args.run_group:
+            baseline_parts.append(args.run_group)
+        log_path = os.path.join(run_dir, 'log', *baseline_parts, self.model_type, name)
+        ckpt_path = os.path.join(run_dir, 'ckpt', *baseline_parts, self.model_type, name)
 
         os.makedirs(log_path, exist_ok=True)
         os.makedirs(ckpt_path, exist_ok=True)

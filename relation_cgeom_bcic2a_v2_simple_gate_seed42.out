@@ -1,0 +1,196 @@
+0:INFO    26-04-13 11:27:00.404 +00:00:01 - trainer.py:225 - log dir: assets/run/log/baseline/v2_simple_gate/relation_cgeom/local_260413112700, checkpoint dir: assets/run/ckpt/baseline/v2_simple_gate/relation_cgeom/local_260413112700
+0:INFO    26-04-13 11:27:00.404 +00:00:01 - trainer.py:227 - Starting relation_cgeom training with 1 dataset(s): ['bcic_2a']
+0:INFO    26-04-13 11:27:00.405 +00:00:01 - trainer.py:1439 - Starting relation_cgeom training with configuration:
+0:INFO    26-04-13 11:27:00.405 +00:00:01 - trainer.py:1440 -   - Datasets: 1 ['bcic_2a']
+0:INFO    26-04-13 11:27:00.405 +00:00:01 - trainer.py:1441 -   - Multitask: False
+0:INFO    26-04-13 11:27:00.405 +00:00:01 - trainer.py:1442 -   - Max epochs: 20
+0:INFO    26-04-13 11:27:00.405 +00:00:01 - trainer.py:1443 -   - Output directory: assets/run/log/baseline/v2_simple_gate/relation_cgeom/local_260413112700 -- assets/run/ckpt/baseline/v2_simple_gate/relation_cgeom/local_260413112700
+0:INFO    26-04-13 11:27:00.405 +00:00:01 - trainer.py:1450 - Using unified/multitask training pattern - single shared model
+0:INFO    26-04-13 11:27:00.411 +00:00:01 - trainer.py:1501 - Starting separate models training for 1 datasets
+0:INFO    26-04-13 11:27:00.411 +00:00:01 - trainer.py:1506 - Training dataset 1/1: bcic_2a
+0:INFO    26-04-13 11:27:00.411 +00:00:01 - trainer.py:514 - Collecting dataset information for per dataset ...
+0:INFO    26-04-13 11:27:00.439 +00:00:01 - trainer.py:535 - Dataset bcic_2a - finetune only
+0:INFO    26-04-13 11:27:00.439 +00:00:01 - relation_cgeom_trainer.py:99 - Setting up relation-CGeom model architecture...
+0:INFO    26-04-13 11:27:00.451 +00:00:01 - relation_cgeom_trainer.py:95 - Relation-CGeom effective input_dims resolved from adapter channels: 22
+0:INFO    26-04-13 11:27:00.591 +00:00:01 - relation_cgeom_trainer.py:142 - Created multi-head classifier with heads: ['bcic_2a']
+0:WARNING 26-04-13 11:27:00.592 +00:00:01 - relation_cgeom_trainer.py:163 - Pretrained checkpoint not found: None
+0:WARNING 26-04-13 11:27:00.592 +00:00:01 - relation_cgeom_trainer.py:163 - Pretrained checkpoint not found: None
+0:INFO    26-04-13 11:27:00.592 +00:00:01 - relation_cgeom_trainer.py:145 - Model setup complete for ['bcic_2a']
+0:INFO    26-04-13 11:27:00.696 +00:00:02 - trainer.py:601 - Creating single main training dataloader...
+0:INFO    26-04-13 11:27:00.760 +00:00:02 - adapter.py:73 - Added montage bcic_2a/10_20 for dataset bcic_2a: 22 channels
+0:INFO    26-04-13 11:27:00.760 +00:00:02 - adapter.py:80 - relation_cgeom: Dataset Adapter analysis complete:
+0:INFO    26-04-13 11:27:00.760 +00:00:02 - adapter.py:81 -   - Total samples: 2880
+0:INFO    26-04-13 11:27:00.760 +00:00:02 - adapter.py:82 -   - Available montages: ['bcic_2a/10_20']
+0:INFO    26-04-13 11:27:00.761 +00:00:02 - adapter.py:84 -   - bcic_2a/10_20: 22 channels
+0:INFO    26-04-13 11:27:00.766 +00:00:02 - trainer.py:601 - Creating single main training dataloader...
+0:INFO    26-04-13 11:27:00.820 +00:00:02 - adapter.py:73 - Added montage bcic_2a/10_20 for dataset bcic_2a: 22 channels
+0:INFO    26-04-13 11:27:00.821 +00:00:02 - adapter.py:80 - relation_cgeom: Dataset Adapter analysis complete:
+0:INFO    26-04-13 11:27:00.821 +00:00:02 - adapter.py:81 -   - Total samples: 1152
+0:INFO    26-04-13 11:27:00.821 +00:00:02 - adapter.py:82 -   - Available montages: ['bcic_2a/10_20']
+0:INFO    26-04-13 11:27:00.821 +00:00:02 - adapter.py:84 -   - bcic_2a/10_20: 22 channels
+0:INFO    26-04-13 11:27:00.824 +00:00:02 - trainer.py:601 - Creating single main training dataloader...
+0:INFO    26-04-13 11:27:00.878 +00:00:02 - adapter.py:73 - Added montage bcic_2a/10_20 for dataset bcic_2a: 22 channels
+0:INFO    26-04-13 11:27:00.878 +00:00:02 - adapter.py:80 - relation_cgeom: Dataset Adapter analysis complete:
+0:INFO    26-04-13 11:27:00.878 +00:00:02 - adapter.py:81 -   - Total samples: 1152
+0:INFO    26-04-13 11:27:00.879 +00:00:02 - adapter.py:82 -   - Available montages: ['bcic_2a/10_20']
+0:INFO    26-04-13 11:27:00.879 +00:00:02 - adapter.py:84 -   - bcic_2a/10_20: 22 channels
+0:INFO    26-04-13 11:27:00.885 +00:00:02 - trainer.py:1525 - Per dataset training setup complete for bcic_2a. 
+0:INFO    26-04-13 11:27:00.885 +00:00:02 - trainer.py:1526 - Starting 20 epochs...
+0:INFO    26-04-13 11:27:15.761 +00:00:17 - trainer.py:1186 - train bcic_2a/train/epoch: 0, bcic_2a/train/step: 0, bcic_2a/train/loss_ce: 1.42684e+00, bcic_2a/train/acc: 1.87500e-01, bcic_2a/train/grad_norm: 4.67233e+00, bcic_2a/train/header_lr: 2.00000e-05, bcic_2a/train/encoder_lr: 2.00000e-06
+0:INFO    26-04-13 11:27:21.438 +00:00:22 - trainer.py:1186 - train bcic_2a/train/epoch: 0, bcic_2a/train/step: 10, bcic_2a/train/loss_ce: 1.39223e+00, bcic_2a/train/acc: 3.43750e-01, bcic_2a/train/grad_norm: 3.78661e+00, bcic_2a/train/header_lr: 2.09184e-05, bcic_2a/train/encoder_lr: 2.09184e-06
+0:INFO    26-04-13 11:27:27.138 +00:00:28 - trainer.py:1186 - train bcic_2a/train/epoch: 0, bcic_2a/train/step: 20, bcic_2a/train/loss_ce: 1.40172e+00, bcic_2a/train/acc: 1.87500e-01, bcic_2a/train/grad_norm: 3.87695e+00, bcic_2a/train/header_lr: 2.36664e-05, bcic_2a/train/encoder_lr: 2.36664e-06
+0:INFO    26-04-13 11:27:32.820 +00:00:34 - trainer.py:1186 - train bcic_2a/train/epoch: 0, bcic_2a/train/step: 30, bcic_2a/train/loss_ce: 1.37433e+00, bcic_2a/train/acc: 3.43750e-01, bcic_2a/train/grad_norm: 3.55854e+00, bcic_2a/train/header_lr: 2.82232e-05, bcic_2a/train/encoder_lr: 2.82232e-06
+0:INFO    26-04-13 11:27:38.529 +00:00:39 - trainer.py:1186 - train bcic_2a/train/epoch: 0, bcic_2a/train/step: 40, bcic_2a/train/loss_ce: 1.38868e+00, bcic_2a/train/acc: 2.81250e-01, bcic_2a/train/grad_norm: 4.10106e+00, bcic_2a/train/header_lr: 3.45537e-05, bcic_2a/train/encoder_lr: 3.45537e-06
+0:INFO    26-04-13 11:27:44.222 +00:00:45 - trainer.py:1186 - train bcic_2a/train/epoch: 0, bcic_2a/train/step: 50, bcic_2a/train/loss_ce: 1.36003e+00, bcic_2a/train/acc: 3.75000e-01, bcic_2a/train/grad_norm: 4.55334e+00, bcic_2a/train/header_lr: 4.26096e-05, bcic_2a/train/encoder_lr: 4.26096e-06
+0:INFO    26-04-13 11:27:50.216 +00:00:51 - trainer.py:1186 - train bcic_2a/train/epoch: 0, bcic_2a/train/step: 60, bcic_2a/train/loss_ce: 1.38773e+00, bcic_2a/train/acc: 2.81250e-01, bcic_2a/train/grad_norm: 4.53789e+00, bcic_2a/train/header_lr: 5.23291e-05, bcic_2a/train/encoder_lr: 5.23291e-06
+0:INFO    26-04-13 11:27:55.903 +00:00:57 - trainer.py:1186 - train bcic_2a/train/epoch: 0, bcic_2a/train/step: 70, bcic_2a/train/loss_ce: 1.41927e+00, bcic_2a/train/acc: 2.81250e-01, bcic_2a/train/grad_norm: 3.84874e+00, bcic_2a/train/header_lr: 6.36380e-05, bcic_2a/train/encoder_lr: 6.36380e-06
+0:INFO    26-04-13 11:28:01.578 +00:01:02 - trainer.py:1186 - train bcic_2a/train/epoch: 0, bcic_2a/train/step: 80, bcic_2a/train/loss_ce: 1.37498e+00, bcic_2a/train/acc: 2.50000e-01, bcic_2a/train/grad_norm: 4.43621e+00, bcic_2a/train/header_lr: 7.64497e-05, bcic_2a/train/encoder_lr: 7.64497e-06
+0:INFO    26-04-13 11:28:06.647 +00:01:08 - trainer.py:1202 - Starting eval evaluation...
+0:INFO    26-04-13 11:28:26.194 +00:01:27 - trainer.py:1270 - bcic_2a/eval epoch: 0, loss: 1.3800, acc: 0.266, balanced_acc: 0.266, cohen_kappa: 0.021, f1: 0.259
+0:INFO    26-04-13 11:28:26.195 +00:01:27 - trainer.py:1202 - Starting test evaluation...
+0:INFO    26-04-13 11:28:45.572 +00:01:46 - trainer.py:1270 - bcic_2a/test epoch: 0, loss: 1.4331, acc: 0.279, balanced_acc: 0.279, cohen_kappa: 0.038, f1: 0.157
+0:INFO    26-04-13 11:28:46.116 +00:01:47 - trainer.py:1403 - Checkpoint saved: bcic_2a: assets/run/ckpt/baseline/v2_simple_gate/relation_cgeom/local_260413112700/seperated/bcic_2a/relation_cgeom_bcic_2a_best.pt
+0:INFO    26-04-13 11:28:46.117 +00:01:47 - trainer.py:1362 - New best checkpoint for bcic_2a: eval/balanced_acc=0.2656
+0:INFO    26-04-13 11:28:46.756 +00:01:48 - trainer.py:1186 - train bcic_2a/train/epoch: 1, bcic_2a/train/step: 90, bcic_2a/train/loss_ce: 1.27381e+00, bcic_2a/train/acc: 5.31250e-01, bcic_2a/train/grad_norm: 4.68488e+00, bcic_2a/train/header_lr: 9.06660e-05, bcic_2a/train/encoder_lr: 9.06660e-06
+0:INFO    26-04-13 11:28:52.358 +00:01:53 - trainer.py:1186 - train bcic_2a/train/epoch: 1, bcic_2a/train/step: 100, bcic_2a/train/loss_ce: 1.34962e+00, bcic_2a/train/acc: 3.75000e-01, bcic_2a/train/grad_norm: 4.90889e+00, bcic_2a/train/header_lr: 1.06178e-04, bcic_2a/train/encoder_lr: 1.06178e-05
+0:INFO    26-04-13 11:28:57.999 +00:01:59 - trainer.py:1186 - train bcic_2a/train/epoch: 1, bcic_2a/train/step: 110, bcic_2a/train/loss_ce: 1.37842e+00, bcic_2a/train/acc: 3.43750e-01, bcic_2a/train/grad_norm: 4.93183e+00, bcic_2a/train/header_lr: 1.22868e-04, bcic_2a/train/encoder_lr: 1.22868e-05
+0:INFO    26-04-13 11:29:03.644 +00:02:05 - trainer.py:1186 - train bcic_2a/train/epoch: 1, bcic_2a/train/step: 120, bcic_2a/train/loss_ce: 1.31852e+00, bcic_2a/train/acc: 4.06250e-01, bcic_2a/train/grad_norm: 3.56282e+00, bcic_2a/train/header_lr: 1.40607e-04, bcic_2a/train/encoder_lr: 1.40607e-05
+0:INFO    26-04-13 11:29:09.299 +00:02:10 - trainer.py:1186 - train bcic_2a/train/epoch: 1, bcic_2a/train/step: 130, bcic_2a/train/loss_ce: 1.30798e+00, bcic_2a/train/acc: 4.06250e-01, bcic_2a/train/grad_norm: 4.31796e+00, bcic_2a/train/header_lr: 1.59259e-04, bcic_2a/train/encoder_lr: 1.59259e-05
+0:INFO    26-04-13 11:29:14.946 +00:02:16 - trainer.py:1186 - train bcic_2a/train/epoch: 1, bcic_2a/train/step: 140, bcic_2a/train/loss_ce: 1.38274e+00, bcic_2a/train/acc: 3.12500e-01, bcic_2a/train/grad_norm: 4.63693e+00, bcic_2a/train/header_lr: 1.78683e-04, bcic_2a/train/encoder_lr: 1.78683e-05
+0:INFO    26-04-13 11:29:20.589 +00:02:21 - trainer.py:1186 - train bcic_2a/train/epoch: 1, bcic_2a/train/step: 150, bcic_2a/train/loss_ce: 1.33985e+00, bcic_2a/train/acc: 3.75000e-01, bcic_2a/train/grad_norm: 5.21988e+00, bcic_2a/train/header_lr: 1.98729e-04, bcic_2a/train/encoder_lr: 1.98729e-05
+0:INFO    26-04-13 11:29:26.243 +00:02:27 - trainer.py:1186 - train bcic_2a/train/epoch: 1, bcic_2a/train/step: 160, bcic_2a/train/loss_ce: 1.27177e+00, bcic_2a/train/acc: 4.68750e-01, bcic_2a/train/grad_norm: 4.58727e+00, bcic_2a/train/header_lr: 2.19244e-04, bcic_2a/train/encoder_lr: 2.19244e-05
+0:INFO    26-04-13 11:29:31.887 +00:02:33 - trainer.py:1186 - train bcic_2a/train/epoch: 1, bcic_2a/train/step: 170, bcic_2a/train/loss_ce: 1.28928e+00, bcic_2a/train/acc: 5.00000e-01, bcic_2a/train/grad_norm: 5.38513e+00, bcic_2a/train/header_lr: 2.40071e-04, bcic_2a/train/encoder_lr: 2.40071e-05
+0:INFO    26-04-13 11:29:36.967 +00:02:38 - trainer.py:1202 - Starting eval evaluation...
+0:INFO    26-04-13 11:29:42.884 +00:02:44 - trainer.py:1270 - bcic_2a/eval epoch: 1, loss: 1.5779, acc: 0.264, balanced_acc: 0.264, cohen_kappa: 0.019, f1: 0.218
+0:INFO    26-04-13 11:29:42.884 +00:02:44 - trainer.py:1202 - Starting test evaluation...
+0:INFO    26-04-13 11:29:48.829 +00:02:50 - trainer.py:1270 - bcic_2a/test epoch: 1, loss: 2.0219, acc: 0.267, balanced_acc: 0.267, cohen_kappa: 0.023, f1: 0.133
+0:INFO    26-04-13 11:29:49.481 +00:02:50 - trainer.py:1186 - train bcic_2a/train/epoch: 2, bcic_2a/train/step: 180, bcic_2a/train/loss_ce: 1.38270e+00, bcic_2a/train/acc: 2.81250e-01, bcic_2a/train/grad_norm: 8.51228e+00, bcic_2a/train/header_lr: 2.61050e-04, bcic_2a/train/encoder_lr: 2.61050e-05
+0:INFO    26-04-13 11:29:55.136 +00:02:56 - trainer.py:1186 - train bcic_2a/train/epoch: 2, bcic_2a/train/step: 190, bcic_2a/train/loss_ce: 1.26265e+00, bcic_2a/train/acc: 4.68750e-01, bcic_2a/train/grad_norm: 6.07963e+00, bcic_2a/train/header_lr: 2.82021e-04, bcic_2a/train/encoder_lr: 2.82021e-05
+0:INFO    26-04-13 11:30:00.829 +00:03:02 - trainer.py:1186 - train bcic_2a/train/epoch: 2, bcic_2a/train/step: 200, bcic_2a/train/loss_ce: 1.24095e+00, bcic_2a/train/acc: 5.00000e-01, bcic_2a/train/grad_norm: 6.00857e+00, bcic_2a/train/header_lr: 3.02824e-04, bcic_2a/train/encoder_lr: 3.02824e-05
+0:INFO    26-04-13 11:30:06.486 +00:03:07 - trainer.py:1186 - train bcic_2a/train/epoch: 2, bcic_2a/train/step: 210, bcic_2a/train/loss_ce: 1.24843e+00, bcic_2a/train/acc: 4.68750e-01, bcic_2a/train/grad_norm: 8.06275e+00, bcic_2a/train/header_lr: 3.23299e-04, bcic_2a/train/encoder_lr: 3.23299e-05
+0:INFO    26-04-13 11:30:12.153 +00:03:13 - trainer.py:1186 - train bcic_2a/train/epoch: 2, bcic_2a/train/step: 220, bcic_2a/train/loss_ce: 1.30970e+00, bcic_2a/train/acc: 2.50000e-01, bcic_2a/train/grad_norm: 7.23265e+00, bcic_2a/train/header_lr: 3.43290e-04, bcic_2a/train/encoder_lr: 3.43290e-05
+0:INFO    26-04-13 11:30:17.802 +00:03:19 - trainer.py:1186 - train bcic_2a/train/epoch: 2, bcic_2a/train/step: 230, bcic_2a/train/loss_ce: 1.18483e+00, bcic_2a/train/acc: 4.68750e-01, bcic_2a/train/grad_norm: 7.97337e+00, bcic_2a/train/header_lr: 3.62643e-04, bcic_2a/train/encoder_lr: 3.62643e-05
+0:INFO    26-04-13 11:30:23.448 +00:03:24 - trainer.py:1186 - train bcic_2a/train/epoch: 2, bcic_2a/train/step: 240, bcic_2a/train/loss_ce: 1.32918e+00, bcic_2a/train/acc: 3.12500e-01, bcic_2a/train/grad_norm: 9.83888e+00, bcic_2a/train/header_lr: 3.81211e-04, bcic_2a/train/encoder_lr: 3.81211e-05
+0:INFO    26-04-13 11:30:29.142 +00:03:30 - trainer.py:1186 - train bcic_2a/train/epoch: 2, bcic_2a/train/step: 250, bcic_2a/train/loss_ce: 1.44609e+00, bcic_2a/train/acc: 3.43750e-01, bcic_2a/train/grad_norm: 1.41636e+01, bcic_2a/train/header_lr: 3.98851e-04, bcic_2a/train/encoder_lr: 3.98851e-05
+0:INFO    26-04-13 11:30:34.827 +00:03:36 - trainer.py:1186 - train bcic_2a/train/epoch: 2, bcic_2a/train/step: 260, bcic_2a/train/loss_ce: 1.25451e+00, bcic_2a/train/acc: 5.00000e-01, bcic_2a/train/grad_norm: 1.11426e+01, bcic_2a/train/header_lr: 4.15428e-04, bcic_2a/train/encoder_lr: 4.15428e-05
+0:INFO    26-04-13 11:30:39.979 +00:03:41 - trainer.py:1202 - Starting eval evaluation...
+0:INFO    26-04-13 11:30:45.922 +00:03:47 - trainer.py:1270 - bcic_2a/eval epoch: 2, loss: 1.6772, acc: 0.236, balanced_acc: 0.236, cohen_kappa: -0.019, f1: 0.202
+0:INFO    26-04-13 11:30:45.924 +00:03:47 - trainer.py:1202 - Starting test evaluation...
+0:INFO    26-04-13 11:30:51.900 +00:03:53 - trainer.py:1270 - bcic_2a/test epoch: 2, loss: 2.0857, acc: 0.306, balanced_acc: 0.306, cohen_kappa: 0.074, f1: 0.195
+0:INFO    26-04-13 11:30:52.578 +00:03:53 - trainer.py:1186 - train bcic_2a/train/epoch: 3, bcic_2a/train/step: 270, bcic_2a/train/loss_ce: 1.19779e+00, bcic_2a/train/acc: 4.68750e-01, bcic_2a/train/grad_norm: 1.40223e+01, bcic_2a/train/header_lr: 4.30816e-04, bcic_2a/train/encoder_lr: 4.30816e-05
+0:INFO    26-04-13 11:30:58.205 +00:03:59 - trainer.py:1186 - train bcic_2a/train/epoch: 3, bcic_2a/train/step: 280, bcic_2a/train/loss_ce: 1.15979e+00, bcic_2a/train/acc: 5.31250e-01, bcic_2a/train/grad_norm: 1.01344e+01, bcic_2a/train/header_lr: 4.44896e-04, bcic_2a/train/encoder_lr: 4.44896e-05
+0:INFO    26-04-13 11:31:03.860 +00:04:05 - trainer.py:1186 - train bcic_2a/train/epoch: 3, bcic_2a/train/step: 290, bcic_2a/train/loss_ce: 1.32034e+00, bcic_2a/train/acc: 4.37500e-01, bcic_2a/train/grad_norm: 1.58424e+01, bcic_2a/train/header_lr: 4.57562e-04, bcic_2a/train/encoder_lr: 4.57562e-05
+0:INFO    26-04-13 11:31:09.504 +00:04:10 - trainer.py:1186 - train bcic_2a/train/epoch: 3, bcic_2a/train/step: 300, bcic_2a/train/loss_ce: 1.33757e+00, bcic_2a/train/acc: 3.43750e-01, bcic_2a/train/grad_norm: 1.25058e+01, bcic_2a/train/header_lr: 4.68716e-04, bcic_2a/train/encoder_lr: 4.68716e-05
+0:INFO    26-04-13 11:31:15.205 +00:04:16 - trainer.py:1186 - train bcic_2a/train/epoch: 3, bcic_2a/train/step: 310, bcic_2a/train/loss_ce: 1.22468e+00, bcic_2a/train/acc: 3.43750e-01, bcic_2a/train/grad_norm: 2.02349e+01, bcic_2a/train/header_lr: 4.78272e-04, bcic_2a/train/encoder_lr: 4.78272e-05
+0:INFO    26-04-13 11:31:20.873 +00:04:22 - trainer.py:1186 - train bcic_2a/train/epoch: 3, bcic_2a/train/step: 320, bcic_2a/train/loss_ce: 1.18254e+00, bcic_2a/train/acc: 5.31250e-01, bcic_2a/train/grad_norm: 1.45349e+01, bcic_2a/train/header_lr: 4.86158e-04, bcic_2a/train/encoder_lr: 4.86158e-05
+0:INFO    26-04-13 11:31:26.538 +00:04:27 - trainer.py:1186 - train bcic_2a/train/epoch: 3, bcic_2a/train/step: 330, bcic_2a/train/loss_ce: 1.24114e+00, bcic_2a/train/acc: 4.06250e-01, bcic_2a/train/grad_norm: 1.85494e+01, bcic_2a/train/header_lr: 4.92313e-04, bcic_2a/train/encoder_lr: 4.92313e-05
+0:INFO    26-04-13 11:31:32.207 +00:04:33 - trainer.py:1186 - train bcic_2a/train/epoch: 3, bcic_2a/train/step: 340, bcic_2a/train/loss_ce: 1.25237e+00, bcic_2a/train/acc: 4.37500e-01, bcic_2a/train/grad_norm: 2.04219e+01, bcic_2a/train/header_lr: 4.96690e-04, bcic_2a/train/encoder_lr: 4.96690e-05
+0:INFO    26-04-13 11:31:37.866 +00:04:39 - trainer.py:1186 - train bcic_2a/train/epoch: 3, bcic_2a/train/step: 350, bcic_2a/train/loss_ce: 1.25425e+00, bcic_2a/train/acc: 2.50000e-01, bcic_2a/train/grad_norm: 1.61660e+01, bcic_2a/train/header_lr: 4.99256e-04, bcic_2a/train/encoder_lr: 4.99256e-05
+0:INFO    26-04-13 11:31:42.956 +00:04:44 - trainer.py:1202 - Starting eval evaluation...
+0:INFO    26-04-13 11:31:48.928 +00:04:50 - trainer.py:1270 - bcic_2a/eval epoch: 3, loss: 1.7341, acc: 0.269, balanced_acc: 0.269, cohen_kappa: 0.025, f1: 0.246
+0:INFO    26-04-13 11:31:48.929 +00:04:50 - trainer.py:1202 - Starting test evaluation...
+0:INFO    26-04-13 11:31:54.934 +00:04:56 - trainer.py:1270 - bcic_2a/test epoch: 3, loss: 2.0995, acc: 0.286, balanced_acc: 0.286, cohen_kappa: 0.049, f1: 0.172
+0:INFO    26-04-13 11:31:55.571 +00:04:56 - trainer.py:1403 - Checkpoint saved: bcic_2a: assets/run/ckpt/baseline/v2_simple_gate/relation_cgeom/local_260413112700/seperated/bcic_2a/relation_cgeom_bcic_2a_best.pt
+0:INFO    26-04-13 11:31:55.572 +00:04:56 - trainer.py:1362 - New best checkpoint for bcic_2a: eval/balanced_acc=0.2691
+0:INFO    26-04-13 11:31:56.217 +00:04:57 - trainer.py:1186 - train bcic_2a/train/epoch: 4, bcic_2a/train/step: 360, bcic_2a/train/loss_ce: 1.12471e+00, bcic_2a/train/acc: 4.37500e-01, bcic_2a/train/grad_norm: 1.23693e+01, bcic_2a/train/header_lr: 4.99999e-04, bcic_2a/train/encoder_lr: 4.99999e-05
+0:INFO    26-04-13 11:32:01.854 +00:05:03 - trainer.py:1186 - train bcic_2a/train/epoch: 4, bcic_2a/train/step: 370, bcic_2a/train/loss_ce: 1.14622e+00, bcic_2a/train/acc: 4.06250e-01, bcic_2a/train/grad_norm: 2.33702e+01, bcic_2a/train/header_lr: 4.99928e-04, bcic_2a/train/encoder_lr: 4.99928e-05
+0:INFO    26-04-13 11:32:07.587 +00:05:08 - trainer.py:1186 - train bcic_2a/train/epoch: 4, bcic_2a/train/step: 380, bcic_2a/train/loss_ce: 1.16050e+00, bcic_2a/train/acc: 4.68750e-01, bcic_2a/train/grad_norm: 2.28319e+01, bcic_2a/train/header_lr: 4.99738e-04, bcic_2a/train/encoder_lr: 4.99738e-05
+0:INFO    26-04-13 11:32:13.264 +00:05:14 - trainer.py:1186 - train bcic_2a/train/epoch: 4, bcic_2a/train/step: 390, bcic_2a/train/loss_ce: 1.04625e+00, bcic_2a/train/acc: 5.31250e-01, bcic_2a/train/grad_norm: 1.47875e+01, bcic_2a/train/header_lr: 4.99428e-04, bcic_2a/train/encoder_lr: 4.99428e-05
+0:INFO    26-04-13 11:32:18.990 +00:05:20 - trainer.py:1186 - train bcic_2a/train/epoch: 4, bcic_2a/train/step: 400, bcic_2a/train/loss_ce: 1.13005e+00, bcic_2a/train/acc: 4.37500e-01, bcic_2a/train/grad_norm: 2.08406e+01, bcic_2a/train/header_lr: 4.99001e-04, bcic_2a/train/encoder_lr: 4.99001e-05
+0:INFO    26-04-13 11:32:24.663 +00:05:26 - trainer.py:1186 - train bcic_2a/train/epoch: 4, bcic_2a/train/step: 410, bcic_2a/train/loss_ce: 1.13695e+00, bcic_2a/train/acc: 5.00000e-01, bcic_2a/train/grad_norm: 1.81394e+01, bcic_2a/train/header_lr: 4.98454e-04, bcic_2a/train/encoder_lr: 4.98454e-05
+0:INFO    26-04-13 11:32:30.316 +00:05:31 - trainer.py:1186 - train bcic_2a/train/epoch: 4, bcic_2a/train/step: 420, bcic_2a/train/loss_ce: 1.01207e+00, bcic_2a/train/acc: 6.56250e-01, bcic_2a/train/grad_norm: 2.82732e+01, bcic_2a/train/header_lr: 4.97789e-04, bcic_2a/train/encoder_lr: 4.97789e-05
+0:INFO    26-04-13 11:32:35.952 +00:05:37 - trainer.py:1186 - train bcic_2a/train/epoch: 4, bcic_2a/train/step: 430, bcic_2a/train/loss_ce: 1.20386e+00, bcic_2a/train/acc: 4.37500e-01, bcic_2a/train/grad_norm: 3.12241e+01, bcic_2a/train/header_lr: 4.97007e-04, bcic_2a/train/encoder_lr: 4.97007e-05
+0:INFO    26-04-13 11:32:41.548 +00:05:42 - trainer.py:1186 - train bcic_2a/train/epoch: 4, bcic_2a/train/step: 440, bcic_2a/train/loss_ce: 1.09488e+00, bcic_2a/train/acc: 3.43750e-01, bcic_2a/train/grad_norm: 2.14911e+01, bcic_2a/train/header_lr: 4.96107e-04, bcic_2a/train/encoder_lr: 4.96107e-05
+0:INFO    26-04-13 11:32:46.598 +00:05:47 - trainer.py:1202 - Starting eval evaluation...
+0:INFO    26-04-13 11:32:52.491 +00:05:53 - trainer.py:1270 - bcic_2a/eval epoch: 4, loss: 1.9051, acc: 0.253, balanced_acc: 0.253, cohen_kappa: 0.003, f1: 0.248
+0:INFO    26-04-13 11:32:52.492 +00:05:53 - trainer.py:1202 - Starting test evaluation...
+0:INFO    26-04-13 11:32:58.375 +00:05:59 - trainer.py:1270 - bcic_2a/test epoch: 4, loss: 2.3946, acc: 0.310, balanced_acc: 0.310, cohen_kappa: 0.080, f1: 0.221
+0:INFO    26-04-13 11:32:59.018 +00:06:00 - trainer.py:1186 - train bcic_2a/train/epoch: 5, bcic_2a/train/step: 450, bcic_2a/train/loss_ce: 1.11390e+00, bcic_2a/train/acc: 4.06250e-01, bcic_2a/train/grad_norm: 2.20274e+01, bcic_2a/train/header_lr: 4.95089e-04, bcic_2a/train/encoder_lr: 4.95089e-05
+0:INFO    26-04-13 11:33:04.624 +00:06:05 - trainer.py:1186 - train bcic_2a/train/epoch: 5, bcic_2a/train/step: 460, bcic_2a/train/loss_ce: 1.11957e+00, bcic_2a/train/acc: 4.06250e-01, bcic_2a/train/grad_norm: 2.85547e+01, bcic_2a/train/header_lr: 4.93955e-04, bcic_2a/train/encoder_lr: 4.93955e-05
+0:INFO    26-04-13 11:33:10.189 +00:06:11 - trainer.py:1186 - train bcic_2a/train/epoch: 5, bcic_2a/train/step: 470, bcic_2a/train/loss_ce: 1.31444e+00, bcic_2a/train/acc: 3.12500e-01, bcic_2a/train/grad_norm: 3.44229e+01, bcic_2a/train/header_lr: 4.92705e-04, bcic_2a/train/encoder_lr: 4.92705e-05
+0:INFO    26-04-13 11:33:15.789 +00:06:17 - trainer.py:1186 - train bcic_2a/train/epoch: 5, bcic_2a/train/step: 480, bcic_2a/train/loss_ce: 1.27042e+00, bcic_2a/train/acc: 4.06250e-01, bcic_2a/train/grad_norm: 4.57197e+01, bcic_2a/train/header_lr: 4.91340e-04, bcic_2a/train/encoder_lr: 4.91340e-05
+0:INFO    26-04-13 11:33:21.386 +00:06:22 - trainer.py:1186 - train bcic_2a/train/epoch: 5, bcic_2a/train/step: 490, bcic_2a/train/loss_ce: 1.01003e+00, bcic_2a/train/acc: 5.93750e-01, bcic_2a/train/grad_norm: 2.43821e+01, bcic_2a/train/header_lr: 4.89859e-04, bcic_2a/train/encoder_lr: 4.89859e-05
+0:INFO    26-04-13 11:33:26.986 +00:06:28 - trainer.py:1186 - train bcic_2a/train/epoch: 5, bcic_2a/train/step: 500, bcic_2a/train/loss_ce: 1.19533e+00, bcic_2a/train/acc: 4.06250e-01, bcic_2a/train/grad_norm: 3.21944e+01, bcic_2a/train/header_lr: 4.88265e-04, bcic_2a/train/encoder_lr: 4.88265e-05
+0:INFO    26-04-13 11:33:32.597 +00:06:33 - trainer.py:1186 - train bcic_2a/train/epoch: 5, bcic_2a/train/step: 510, bcic_2a/train/loss_ce: 1.11814e+00, bcic_2a/train/acc: 4.06250e-01, bcic_2a/train/grad_norm: 3.73824e+01, bcic_2a/train/header_lr: 4.86557e-04, bcic_2a/train/encoder_lr: 4.86557e-05
+0:INFO    26-04-13 11:33:38.187 +00:06:39 - trainer.py:1186 - train bcic_2a/train/epoch: 5, bcic_2a/train/step: 520, bcic_2a/train/loss_ce: 1.13406e+00, bcic_2a/train/acc: 4.68750e-01, bcic_2a/train/grad_norm: 2.98733e+01, bcic_2a/train/header_lr: 4.84736e-04, bcic_2a/train/encoder_lr: 4.84736e-05
+0:INFO    26-04-13 11:33:43.852 +00:06:45 - trainer.py:1186 - train bcic_2a/train/epoch: 5, bcic_2a/train/step: 530, bcic_2a/train/loss_ce: 9.80690e-01, bcic_2a/train/acc: 5.93750e-01, bcic_2a/train/grad_norm: 3.36471e+01, bcic_2a/train/header_lr: 4.82804e-04, bcic_2a/train/encoder_lr: 4.82804e-05
+0:INFO    26-04-13 11:33:48.923 +00:06:50 - trainer.py:1202 - Starting eval evaluation...
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/root/EEG-FM-Bench/baseline_main.py", line 84, in <module>
+[rank0]:     main()
+[rank0]:   File "/root/EEG-FM-Bench/baseline_main.py", line 70, in main
+[rank0]:     trainer.run()
+[rank0]:   File "/root/EEG-FM-Bench/baseline/abstract/trainer.py", line 1451, in run
+[rank0]:     self.run_separate_training()
+[rank0]:   File "/root/EEG-FM-Bench/baseline/abstract/trainer.py", line 1536, in run_separate_training
+[rank0]:     self.eval_epoch([valid_loader], 'eval')
+[rank0]:   File "/root/EEG-FM-Bench/baseline/abstract/trainer.py", line 1226, in eval_epoch
+[rank0]:     logits, loss = self.train_step(batch, labels)
+[rank0]:   File "/root/EEG-FM-Bench/baseline/abstract/trainer.py", line 1115, in train_step
+[rank0]:     logits = self.model(batch)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/parallel/distributed.py", line 1666, in forward
+[rank0]:     else self._run_ddp_forward(*inputs, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/parallel/distributed.py", line 1492, in _run_ddp_forward
+[rank0]:     return self.module(*inputs, **kwargs)  # type: ignore[index]
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/root/EEG-FM-Bench/baseline/relation_cgeom/relation_cgeom_trainer.py", line 46, in forward
+[rank0]:     features = self.encoder(x, mask=self.downstream_mask)  # [B, T, 2 * output_dims]
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/root/EEG-FM-Bench/baseline/relation_cgeom/encoder_three_branch_hyp_relation_cgeom.py", line 245, in forward
+[rank0]:     h_complex, band_features = self.complex_branch(x, return_band_features=True)  # [B, T, 2D], list[[B, T, 2D]]
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/root/EEG-FM-Bench/baseline/relation_cgeom/eeg_models/three_branch/complex_branch_cgeom.py", line 100, in forward
+[rank0]:     band_features = [
+[rank0]:   File "/root/EEG-FM-Bench/baseline/relation_cgeom/eeg_models/three_branch/complex_branch_cgeom.py", line 101, in <listcomp>
+[rank0]:     self._encode_single_band(idx, band_input)
+[rank0]:   File "/root/EEG-FM-Bench/baseline/relation_cgeom/eeg_models/three_branch/complex_branch_cgeom.py", line 84, in _encode_single_band
+[rank0]:     return self.band_encoders[idx](x_band)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/root/EEG-FM-Bench/baseline/relation_cgeom/eeg_models/three_branch/complex_branch_cgeom.py", line 26, in forward
+[rank0]:     return self.repr_dropout(self.feature_extractor(x_complex))
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/root/EEG-FM-Bench/baseline/relation_cgeom/dilated_conv_complex_geom.py", line 72, in forward
+[rank0]:     return self.net(x)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+[rank0]:     input = module(input)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/root/EEG-FM-Bench/baseline/relation_cgeom/dilated_conv_complex_geom.py", line 53, in forward
+[rank0]:     x = self.bn2(x)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/opt/conda/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/root/EEG-FM-Bench/complexnn_torch/bn.py", line 172, in forward
+[rank0]:     return ComplexBN(
+[rank0]:   File "/root/EEG-FM-Bench/complexnn_torch/bn.py", line 67, in ComplexBN
+[rank0]:     gamma_rr = _expand_param(gamma_rr, real, axis, layernorm)
+[rank0]:   File "/root/EEG-FM-Bench/complexnn_torch/bn.py", line 33, in _expand_param
+[rank0]:     def _expand_param(param, x, axis, layernorm=False):
+[rank0]: KeyboardInterrupt
+[rank0]:[W413 11:33:50.624369370 ProcessGroupNCCL.cpp:1553] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

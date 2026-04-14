@@ -98,6 +98,7 @@ class BaseLoggingArgs(BaseModel):
     """Base logging configuration."""
     experiment_name: str = "baseline"
     run_dir: str = "assets/run"
+    run_group: Optional[str] = None
 
     use_cloud: bool = False
     cloud_backend: str = "wandb"

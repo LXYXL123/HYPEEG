@@ -33,6 +33,16 @@ class RelationCGeomModelArgs(BaseModelArgs):
     hyperbolic_curvature: float = 1.0
     learnable_curvature: bool = True
 
+    use_raw_residual: bool = True
+    use_complex_residual: bool = False
+    use_hyper_relation: bool = True
+    use_gated_raw_residual: bool = True
+    use_gated_complex_residual: bool = False
+    local_fusion_type: str = "add"
+    relation_condition_type: str = "residual"
+    relation_gate_scale: float = 0.1
+    relation_film_scale: float = 0.1
+
     mask_mode: str = "binomial"
     downstream_mask: Optional[str] = "all_true"
 
@@ -96,7 +106,15 @@ class RelationCGeomConfig(AbstractConfig):
             return False
         if self.model.hyperbolic_curvature <= 0:
             return False
+        if self.model.relation_gate_scale < 0:
+            return False
+        if self.model.relation_film_scale < 0:
+            return False
         if self.model.band_fusion_type not in ["concat_linear", "gated_sum"]:
+            return False
+        if self.model.local_fusion_type not in ["add", "concat_linear"]:
+            return False
+        if self.model.relation_condition_type not in ["residual", "gate", "film"]:
             return False
         if self.training.lr_schedule not in ["onecycle", "cosine"]:
             return False

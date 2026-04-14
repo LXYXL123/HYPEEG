@@ -74,7 +74,14 @@ class SeedBuilder(EEGDatasetBuilder):
     BUILDER_CONFIG_CLASS = SeedConfig
     BUILDER_CONFIGS = [
         BUILDER_CONFIG_CLASS(name='pretrain'),
-        BUILDER_CONFIG_CLASS(name='finetune', is_finetune=True, wnd_div_sec=4),
+        # Cross-subject finetune: 15 subjects -> 9 train / 3 valid / 3 test.
+        BUILDER_CONFIG_CLASS(
+            name='finetune',
+            is_finetune=True,
+            wnd_div_sec=4,
+            valid_ratio=0.2,
+            test_ratio=0.2,
+        ),
         BUILDER_CONFIG_CLASS(name='finetune_sub_dependent', is_finetune=True, wnd_div_sec=4, is_cross_subject=False),
     ]
 
@@ -202,5 +209,4 @@ if __name__ == "__main__":
     builder.download_and_prepare(num_proc=8)
     dataset = builder.as_dataset()
     print(dataset)
-
 
