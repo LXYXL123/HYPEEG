@@ -38,6 +38,15 @@ class TS2VecThreeBranchHypRelationCGeom:
         hyperbolic_depth=1,
         hyperbolic_curvature=1.0,
         learnable_curvature=True,
+        use_setup_conditioned=False,
+        setup_meta_dim=128,
+        setup_ctx_dim=128,
+        setup_dim=128,
+        setup_channel_vocab_size=128,
+        setup_condition_scale=0.1,
+        use_variable_channel_frontend=False,
+        per_channel_stem_depth=2,
+        channel_attn_heads=4,
         tf_align_weight=0.3,
         tf_align_type='cosine',
         raw_mask_weight=0.0,
@@ -53,6 +62,7 @@ class TS2VecThreeBranchHypRelationCGeom:
         self.max_train_length = max_train_length
         self.temporal_unit = temporal_unit
         self.distributed = distributed
+        self.sampling_rate = float(sampling_rate)
 
         self._model = TSEncoderThreeBranchHypRelationCGeom(
             input_dims=input_dims,
@@ -72,6 +82,15 @@ class TS2VecThreeBranchHypRelationCGeom:
             hyperbolic_curvature=hyperbolic_curvature,
             learnable_curvature=learnable_curvature,
             use_raw_mask_loss=raw_mask_weight > 0,
+            use_setup_conditioned=use_setup_conditioned,
+            setup_meta_dim=setup_meta_dim,
+            setup_ctx_dim=setup_ctx_dim,
+            setup_dim=setup_dim,
+            setup_channel_vocab_size=setup_channel_vocab_size,
+            setup_condition_scale=setup_condition_scale,
+            use_variable_channel_frontend=use_variable_channel_frontend,
+            per_channel_stem_depth=per_channel_stem_depth,
+            channel_attn_heads=channel_attn_heads,
         ).to(self.device)
         if self.distributed:
             self._train_net = torch.nn.parallel.DistributedDataParallel(
@@ -105,9 +124,18 @@ class TS2VecThreeBranchHypRelationCGeom:
         self.n_iters = 0
         self.train_history = []
 
-    def _compute_pair_loss(self, x, net=None):
+    def _build_setup(self, channel_ids=None):
+        if channel_ids is None:
+            return None
+        return {
+            'channel_ids': channel_ids.to(self.device),
+            'sampling_rate': self.sampling_rate,
+        }
+
+    def _compute_pair_loss(self, x, net=None, channel_ids=None):
         if net is None:
             net = self._train_net
+        setup = self._build_setup(channel_ids)
 
         ts_l = x.size(1)
         crop_l = np.random.randint(low=2 ** (self.temporal_unit + 1), high=ts_l + 1)
@@ -120,24 +148,34 @@ class TS2VecThreeBranchHypRelationCGeom:
         view1 = net(
             take_per_row(x, crop_offset + crop_eleft, crop_right - crop_eleft),
             return_aux=True,
+            setup=setup,
         )
         view1['main_repr'] = view1['main_repr'][:, -crop_l:]
 
         view2 = net(
             take_per_row(x, crop_offset + crop_left, crop_eright - crop_left),
             return_aux=True,
+            setup=setup,
         )
         view2['main_repr'] = view2['main_repr'][:, :crop_l]
 
         return self.loss_module(view1, view2, temporal_unit=self.temporal_unit)
 
-    def evaluate_loss(self, eval_data, batch_size=None, verbose=False, desc='Pretrain eval'):
+    def evaluate_loss(self, eval_data, eval_channel_ids=None, batch_size=None, verbose=False, desc='Pretrain eval'):
         assert eval_data.ndim == 3
         if batch_size is None:
             batch_size = self.batch_size
 
-        eval_data = eval_data[~np.isnan(eval_data).all(axis=2).all(axis=1)]
-        eval_dataset = TensorDataset(torch.from_numpy(eval_data).to(torch.float))
+        valid = ~np.isnan(eval_data).all(axis=2).all(axis=1)
+        eval_data = eval_data[valid]
+        if eval_channel_ids is not None:
+            eval_channel_ids = eval_channel_ids[valid]
+            eval_dataset = TensorDataset(
+                torch.from_numpy(eval_data).to(torch.float),
+                torch.from_numpy(eval_channel_ids).to(torch.long),
+            )
+        else:
+            eval_dataset = TensorDataset(torch.from_numpy(eval_data).to(torch.float))
         eval_loader = DataLoader(eval_dataset, batch_size=min(batch_size, len(eval_dataset)), shuffle=False, drop_last=False)
 
         org_training = self.net.training
@@ -153,12 +191,15 @@ class TS2VecThreeBranchHypRelationCGeom:
         with torch.no_grad():
             for batch in iterator:
                 x = batch[0]
+                channel_ids = batch[1] if len(batch) > 1 else None
                 if self.max_train_length is not None and x.size(1) > self.max_train_length:
                     window_offset = (x.size(1) - self.max_train_length) // 2
                     x = x[:, window_offset: window_offset + self.max_train_length]
                 x = x.to(self.device)
+                if channel_ids is not None:
+                    channel_ids = channel_ids.to(self.device)
 
-                loss, loss_terms = self._compute_pair_loss(x, net=self.net)
+                loss, loss_terms = self._compute_pair_loss(x, net=self.net, channel_ids=channel_ids)
                 loss_sum += float(loss.item())
                 n_iters += 1
                 for key, value in loss_terms.items():
@@ -181,8 +222,11 @@ class TS2VecThreeBranchHypRelationCGeom:
             record[f'eval_{key}'] = float(value / n_iters)
         return record
 
-    def fit(self, train_data, n_epochs=None, n_iters=None, verbose=False):
+    def fit(self, train_data, train_channel_ids=None, n_epochs=None, n_iters=None, verbose=False):
         assert train_data.ndim == 3
+        if train_channel_ids is not None:
+            assert train_channel_ids.ndim == 2
+            assert train_channel_ids.shape[0] == train_data.shape[0]
 
         if n_iters is None and n_epochs is None:
             n_iters = 200 if train_data.size <= 100000 else 600
@@ -191,13 +235,23 @@ class TS2VecThreeBranchHypRelationCGeom:
             sections = train_data.shape[1] // self.max_train_length
             if sections >= 2:
                 train_data = np.concatenate(split_with_nan(train_data, sections, axis=1), axis=0)
+                if train_channel_ids is not None:
+                    train_channel_ids = np.concatenate([train_channel_ids for _ in range(sections)], axis=0)
 
         temporal_missing = np.isnan(train_data).all(axis=-1).any(axis=0)
         if temporal_missing[0] or temporal_missing[-1]:
             train_data = centerize_vary_length_series(train_data)
 
-        train_data = train_data[~np.isnan(train_data).all(axis=2).all(axis=1)]
-        train_dataset = TensorDataset(torch.from_numpy(train_data).to(torch.float))
+        valid = ~np.isnan(train_data).all(axis=2).all(axis=1)
+        train_data = train_data[valid]
+        if train_channel_ids is not None:
+            train_channel_ids = train_channel_ids[valid]
+            train_dataset = TensorDataset(
+                torch.from_numpy(train_data).to(torch.float),
+                torch.from_numpy(train_channel_ids).to(torch.long),
+            )
+        else:
+            train_dataset = TensorDataset(torch.from_numpy(train_data).to(torch.float))
         train_sampler = None
         if self.distributed:
             train_sampler = DistributedSampler(train_dataset, shuffle=True, drop_last=True)
@@ -239,13 +293,16 @@ class TS2VecThreeBranchHypRelationCGeom:
                     break
 
                 x = batch[0]
+                channel_ids = batch[1] if len(batch) > 1 else None
                 if self.max_train_length is not None and x.size(1) > self.max_train_length:
                     window_offset = np.random.randint(x.size(1) - self.max_train_length + 1)
                     x = x[:, window_offset: window_offset + self.max_train_length]
                 x = x.to(self.device)
+                if channel_ids is not None:
+                    channel_ids = channel_ids.to(self.device)
 
                 optimizer.zero_grad()
-                loss, loss_terms = self._compute_pair_loss(x)
+                loss, loss_terms = self._compute_pair_loss(x, channel_ids=channel_ids)
 
                 loss.backward()
                 optimizer.step()

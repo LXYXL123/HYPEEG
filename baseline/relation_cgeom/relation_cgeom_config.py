@@ -43,6 +43,18 @@ class RelationCGeomModelArgs(BaseModelArgs):
     relation_gate_scale: float = 0.1
     relation_film_scale: float = 0.1
 
+    # Setup-Conditioned Hierarchical Relation-CGeom. Disabled by default so
+    # existing relation_cgeom configs keep the original forward path.
+    use_setup_conditioned: bool = False
+    setup_meta_dim: int = 128
+    setup_ctx_dim: int = 128
+    setup_dim: int = 128
+    setup_channel_vocab_size: int = 128
+    setup_condition_scale: float = 0.1
+    use_variable_channel_frontend: bool = False
+    per_channel_stem_depth: int = 2
+    channel_attn_heads: int = 4
+
     mask_mode: str = "binomial"
     downstream_mask: Optional[str] = "all_true"
 
@@ -109,6 +121,26 @@ class RelationCGeomConfig(AbstractConfig):
         if self.model.relation_gate_scale < 0:
             return False
         if self.model.relation_film_scale < 0:
+            return False
+        if self.model.use_setup_conditioned and not self.model.use_raw_branch:
+            return False
+        if self.model.use_setup_conditioned and not self.model.use_hyper_relation:
+            return False
+        if self.model.setup_meta_dim <= 0:
+            return False
+        if self.model.setup_ctx_dim <= 0:
+            return False
+        if self.model.setup_dim <= 0:
+            return False
+        if self.model.setup_channel_vocab_size <= 0:
+            return False
+        if self.model.setup_condition_scale < 0:
+            return False
+        if self.model.use_variable_channel_frontend and not self.model.use_setup_conditioned:
+            return False
+        if self.model.per_channel_stem_depth < 0:
+            return False
+        if self.model.channel_attn_heads <= 0:
             return False
         if self.model.band_fusion_type not in ["concat_linear", "gated_sum"]:
             return False

@@ -13,6 +13,7 @@ from data.dataset.bcic.bcic_2020_3 import BCIC2020ImagineBuilder
 from data.dataset.bcic.bcic_2a import BCIC2ABuilder
 from data.dataset.brain_lat import BrainLatBuilder
 from data.dataset.chisco import ChiscoBuilder
+from data.dataset.cho2017 import Cho2017Builder
 from data.dataset.emobrain import EmobrainBuilder
 from data.dataset.grasp_and_lift import GraspAndLiftBuilder
 from data.dataset.hbn import HBNBuilder
@@ -85,6 +86,7 @@ DATASET_SELECTOR: dict[str, Type[EEGDatasetBuilder]] = {
     'mimul_11': Mimul11Builder,
     'inner_speech': InnerSpeechBuilder,
     'chisco': ChiscoBuilder,
+    'cho2017': Cho2017Builder,
     'open_miir': OpenMiirBuilder,
 }
 
@@ -226,5 +228,4 @@ if __name__ == '__main__':
 
     for batch in loader:
         pass
-
 

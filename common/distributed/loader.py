@@ -84,7 +84,15 @@ class DistributedGroupBatchSampler(Sampler):
             self.batch_size = batch_size
 
     def _group_by_montage(self):
-        montage = np.array(self.dataset['montage'])
+        # The training dataset is usually returned with ``with_format('torch')``.
+        # Reading a full string column through the torch formatter can fail with
+        # NumPy 2.x because datasets internally calls np.array(..., copy=False).
+        # Reset formatting on a shallow dataset view for metadata grouping.
+        if hasattr(self.dataset, 'with_format'):
+            montage_col = self.dataset.with_format(None)['montage']
+        else:
+            montage_col = [self.dataset[i]['montage'] for i in range(len(self.dataset))]
+        montage = np.asarray(montage_col)
         unique_montages, inverse = np.unique(montage, return_inverse=True)
         self.montage_groups = {
             m: torch.where(torch.from_numpy(inverse) == idx)[0]

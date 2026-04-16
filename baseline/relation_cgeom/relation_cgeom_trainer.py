@@ -27,23 +27,42 @@ class RelationCGeomUnifiedModel(nn.Module):
         self,
         encoder: TSEncoderThreeBranchHypRelationCGeom,
         classifier: MultiHeadClassifier,
+        sampling_rate: float = 256.0,
         downstream_mask: Optional[str] = "all_true",
         grad_cam: bool = False,
     ):
         super().__init__()
         self.encoder = encoder
         self.classifier = classifier
+        self.sampling_rate = float(sampling_rate)
         self.downstream_mask = downstream_mask
         self.grad_cam = grad_cam
         self.grad_cam_activation = None
 
+    def _build_setup_context(self, batch, x):
+        """Build static setup metadata for the setup-conditioned encoder.
+
+        x: [B, C, T]. The encoder receives channel ids and scalar setup values;
+        shallow signal statistics are computed inside SetupEncoder from x itself.
+        """
+        # chs contains the global ElectrodeSet ids emitted by the processor.
+        # This is the channel-name signal used by SetupEncoder; chans_id is only
+        # a fallback for older cached datasets.
+        channel_ids = batch.get("chs", batch.get("chans_id"))
+        return {
+            "channel_ids": channel_ids,
+            "sampling_rate": self.sampling_rate,
+            "window_len": x.size(-1),
+        }
+
     def forward(self, batch):
         x = batch["data"]  # [B, C, T]
         montage = batch["montage"][0]
+        setup = self._build_setup_context(batch, x)
 
         # relation-CGeom encoder consumes [B, T, C].
         x = x.transpose(1, 2)
-        features = self.encoder(x, mask=self.downstream_mask)  # [B, T, 2 * output_dims]
+        features = self.encoder(x, mask=self.downstream_mask, setup=setup)  # [B, T, 2 * output_dims]
         features = features.unsqueeze(2)  # [B, T, 1, D]
 
         if self.grad_cam:
@@ -74,9 +93,9 @@ class RelationCGeomTrainer(AbstractTrainer):
         else:
             self.loss_fn = nn.CrossEntropyLoss()
 
-    def _resolve_input_dims(self) -> int:
+    def _resolve_input_dims(self, allow_variable: bool = False) -> int:
         channel_counts = set()
-        supported_channels = set(RelationCGeomDatasetAdapter.get_standard_eeg_channels())
+        supported_channels = set(RelationCGeomDatasetAdapter.get_relation_cgeom_channels())
 
         for ds_name, info in self.ds_info.items():
             ds_conf = info["config"]
@@ -84,6 +103,14 @@ class RelationCGeomTrainer(AbstractTrainer):
             for _, channel_names in montages.items():
                 effective_channels = [ch for ch in channel_names if ch in supported_channels]
                 channel_counts.add(len(effective_channels))
+
+        if allow_variable:
+            input_dims = max(channel_counts)
+            logger.info(
+                "Relation-CGeom variable-channel frontend enabled; active effective channel counts: "
+                f"{sorted(channel_counts)}"
+            )
+            return input_dims
 
         if len(channel_counts) != 1:
             raise ValueError(
@@ -99,7 +126,7 @@ class RelationCGeomTrainer(AbstractTrainer):
         logger.info("Setting up relation-CGeom model architecture...")
         model_cfg: RelationCGeomModelArgs = self.cfg.model
 
-        input_dims = self._resolve_input_dims()
+        input_dims = self._resolve_input_dims(allow_variable=model_cfg.use_variable_channel_frontend)
         self.encoder = TSEncoderThreeBranchHypRelationCGeom(
             input_dims=input_dims,
             output_dims=model_cfg.output_dims,
@@ -124,6 +151,15 @@ class RelationCGeomTrainer(AbstractTrainer):
             relation_condition_type=model_cfg.relation_condition_type,
             relation_gate_scale=model_cfg.relation_gate_scale,
             relation_film_scale=model_cfg.relation_film_scale,
+            use_setup_conditioned=model_cfg.use_setup_conditioned,
+            setup_meta_dim=model_cfg.setup_meta_dim,
+            setup_ctx_dim=model_cfg.setup_ctx_dim,
+            setup_dim=model_cfg.setup_dim,
+            setup_channel_vocab_size=model_cfg.setup_channel_vocab_size,
+            setup_condition_scale=model_cfg.setup_condition_scale,
+            use_variable_channel_frontend=model_cfg.use_variable_channel_frontend,
+            per_channel_stem_depth=model_cfg.per_channel_stem_depth,
+            channel_attn_heads=model_cfg.channel_attn_heads,
             mask_mode=model_cfg.mask_mode,
         )
 
@@ -151,6 +187,7 @@ class RelationCGeomTrainer(AbstractTrainer):
         model = RelationCGeomUnifiedModel(
             encoder=self.encoder,
             classifier=self.classifier,
+            sampling_rate=float(self.cfg.fs),
             downstream_mask=model_cfg.downstream_mask,
             grad_cam=model_cfg.grad_cam,
         )
@@ -187,7 +224,24 @@ class RelationCGeomTrainer(AbstractTrainer):
 
             cleaned_state[new_key] = value
 
-        missing, unexpected = self.encoder.load_state_dict(cleaned_state, strict=False)
+        # Cross-dataset pretraining may change the input channel count
+        # (e.g. PhysioMI 64ch -> BCIC-2a 22ch). strict=False does not ignore
+        # same-key shape mismatches, so filter them explicitly and load the
+        # compatible encoder layers.
+        target_state = self.encoder.state_dict()
+        compatible_state = {}
+        skipped_mismatch = []
+        for key, value in cleaned_state.items():
+            if key in target_state and target_state[key].shape != value.shape:
+                skipped_mismatch.append((key, tuple(value.shape), tuple(target_state[key].shape)))
+                continue
+            compatible_state[key] = value
+
+        missing, unexpected = self.encoder.load_state_dict(compatible_state, strict=False)
+        if skipped_mismatch:
+            logger.warning("Skipped pretrained keys with incompatible shapes:")
+            for key, ckpt_shape, model_shape in skipped_mismatch:
+                logger.warning(f"  - {key}: checkpoint={ckpt_shape}, model={model_shape}")
         if missing:
             logger.warning(f"Missing keys when loading checkpoint: {missing}")
         if unexpected:

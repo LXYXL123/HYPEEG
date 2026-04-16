@@ -14,6 +14,7 @@ import os
 import pickle
 import shutil
 import sys
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -45,6 +46,73 @@ def parse_bands(spec: str) -> tuple[tuple[float, float], ...]:
     return tuple(bands)
 
 
+def _safe_cache_token(value: object) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value))
+
+
+def _array_cache_paths(
+    cache_dir: str | os.PathLike | None,
+    dataset_name: str,
+    config_name: str,
+    fs: int,
+    split: str,
+    scale: float,
+    max_samples: int | None,
+) -> tuple[Path, Path, Path] | None:
+    if cache_dir is None:
+        return None
+    max_part = "all" if max_samples is None else str(max_samples)
+    key = "__".join(
+        _safe_cache_token(item)
+        for item in (dataset_name, config_name, f"fs{int(fs)}", split, f"scale{scale:g}", f"max{max_part}")
+    )
+    root = Path(cache_dir)
+    return root / f"{key}.data.npy", root / f"{key}.chs.npy", root / f"{key}.meta.json"
+
+
+def _load_array_cache(
+    paths: tuple[Path, Path, Path] | None,
+    mmap_cache: bool,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if paths is None:
+        return None
+    data_path, chs_path, meta_path = paths
+    if not (data_path.exists() and chs_path.exists() and meta_path.exists()):
+        return None
+    mmap_mode = "r" if mmap_cache else None
+    data = np.load(data_path, mmap_mode=mmap_mode)
+    channel_ids = np.load(chs_path, mmap_mode=mmap_mode)
+    print(f"Loaded array cache: {data_path}", flush=True)
+    print(f"Loaded channel cache: {chs_path}", flush=True)
+    return data, channel_ids
+
+
+def _save_array_cache(
+    paths: tuple[Path, Path, Path] | None,
+    data: np.ndarray,
+    channel_ids: np.ndarray,
+    meta: dict,
+) -> None:
+    if paths is None:
+        return
+    data_path, chs_path, meta_path = paths
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_data_path = data_path.with_suffix(data_path.suffix + ".tmp")
+    tmp_chs_path = chs_path.with_suffix(chs_path.suffix + ".tmp")
+    tmp_meta_path = meta_path.with_suffix(meta_path.suffix + ".tmp")
+    with open(tmp_data_path, "wb") as f:
+        np.save(f, data)
+    with open(tmp_chs_path, "wb") as f:
+        np.save(f, channel_ids)
+    with open(tmp_meta_path, "w") as f:
+        json.dump(meta, f, indent=2, sort_keys=True)
+    os.replace(tmp_data_path, data_path)
+    os.replace(tmp_chs_path, chs_path)
+    os.replace(tmp_meta_path, meta_path)
+    print(f"Saved array cache: {data_path}", flush=True)
+    print(f"Saved channel cache: {chs_path}", flush=True)
+
+
 def load_pretrain_array(
     dataset_name: str,
     config_name: str,
@@ -53,7 +121,17 @@ def load_pretrain_array(
     split: str,
     scale: float,
     max_samples: int | None,
-) -> np.ndarray:
+    load_chunk_size: int = 256,
+    array_cache_dir: str | os.PathLike | None = None,
+    overwrite_array_cache: bool = False,
+    mmap_array_cache: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    cache_paths = _array_cache_paths(array_cache_dir, dataset_name, config_name, fs, split, scale, max_samples)
+    if not overwrite_array_cache:
+        cached = _load_array_cache(cache_paths, mmap_cache=mmap_array_cache)
+        if cached is not None:
+            return cached
+
     print(
         f"Opening dataset: {dataset_name}/{config_name}, split={split}, "
         f"fs={fs}, data_root={data_root}",
@@ -72,18 +150,47 @@ def load_pretrain_array(
     first = np.asarray(ds[0]["data"], dtype=np.float32)
     if first.ndim != 2:
         raise ValueError(f"Expected data shape [C, T], got {first.shape}")
+    first_chs = np.asarray(ds[0]["chs"], dtype=np.int64)
 
     n_channels, n_timepoints = first.shape
     data = np.empty((n_samples, n_timepoints, n_channels), dtype=np.float32)
-    data[0] = first.T * scale
+    channel_ids = np.empty((n_samples, n_channels), dtype=np.int64)
+    # Read Arrow rows in chunks instead of row-by-row. Per-row HF access is
+    # correct but very slow for pretraining-scale window counts.
+    for start in tqdm(range(0, n_samples, load_chunk_size), desc="Loading windows into RAM"):
+        end = min(start + load_chunk_size, n_samples)
+        batch = ds[start:end]
+        samples = np.asarray(batch["data"], dtype=np.float32)
+        sample_chs = np.asarray(batch["chs"], dtype=np.int64)
+        if samples.shape != (end - start, n_channels, n_timepoints):
+            raise ValueError(
+                f"Inconsistent batch data shape at {start}:{end}: "
+                f"{samples.shape} vs {(end - start, n_channels, n_timepoints)}"
+            )
+        if sample_chs.shape != (end - start, n_channels):
+            raise ValueError(
+                f"Inconsistent batch channel-id shape at {start}:{end}: "
+                f"{sample_chs.shape} vs {(end - start, n_channels)}"
+            )
+        data[start:end] = np.transpose(samples, (0, 2, 1)) * scale
+        channel_ids[start:end] = sample_chs
 
-    for i in tqdm(range(1, n_samples), desc="Loading windows into RAM"):
-        sample = np.asarray(ds[i]["data"], dtype=np.float32)
-        if sample.shape != first.shape:
-            raise ValueError(f"Inconsistent sample shape at {i}: {sample.shape} vs {first.shape}")
-        data[i] = sample.T * scale
-
-    return data
+    _save_array_cache(
+        cache_paths,
+        data,
+        channel_ids,
+        {
+            "dataset": dataset_name,
+            "config": config_name,
+            "fs": int(fs),
+            "split": split,
+            "scale": float(scale),
+            "max_samples": max_samples,
+            "shape": list(data.shape),
+            "channel_shape": list(channel_ids.shape),
+        },
+    )
+    return data, channel_ids
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -96,6 +203,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fs", type=int, default=256)
     parser.add_argument("--scale", type=float, default=0.001, help="Convert saved uV data to model input scale, default uV->mV.")
     parser.add_argument("--max-samples", type=int, default=None, help="Optional subset size for smoke tests.")
+    parser.add_argument("--array-cache-dir", default=None, help="Optional .npy cache directory for decoded HF windows.")
+    parser.add_argument("--overwrite-array-cache", action="store_true")
+    parser.add_argument("--mmap-array-cache", action="store_true", help="Memory-map cached .npy arrays instead of loading into RAM.")
 
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -113,6 +223,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hyperbolic-depth", type=int, default=1)
     parser.add_argument("--hyperbolic-curvature", type=float, default=1.0)
     parser.add_argument("--fixed-curvature", action="store_true")
+    parser.add_argument("--use-setup-conditioned", action="store_true")
+    parser.add_argument("--setup-meta-dim", type=int, default=128)
+    parser.add_argument("--setup-ctx-dim", type=int, default=128)
+    parser.add_argument("--setup-dim", type=int, default=128)
+    parser.add_argument("--setup-channel-vocab-size", type=int, default=128)
+    parser.add_argument("--setup-condition-scale", type=float, default=0.1)
+    parser.add_argument("--use-variable-channel-frontend", action="store_true")
+    parser.add_argument("--per-channel-stem-depth", type=int, default=2)
+    parser.add_argument("--channel-attn-heads", type=int, default=4)
     parser.add_argument("--tf-align-weight", type=float, default=0.3)
     parser.add_argument("--tf-align-type", default="cosine", choices=["cosine", "mse"])
     parser.add_argument("--raw-mask-weight", type=float, default=0.0)
@@ -136,7 +255,7 @@ def main() -> None:
     if not data_root.startswith("s3://") and not os.path.isabs(data_root):
         data_root = str((PROJECT_ROOT / data_root).resolve())
 
-    train_data = load_pretrain_array(
+    train_data, train_channel_ids = load_pretrain_array(
         dataset_name=args.dataset,
         config_name=args.config,
         fs=args.fs,
@@ -144,8 +263,11 @@ def main() -> None:
         split=args.split,
         scale=args.scale,
         max_samples=args.max_samples,
+        array_cache_dir=args.array_cache_dir,
+        overwrite_array_cache=args.overwrite_array_cache,
+        mmap_array_cache=args.mmap_array_cache,
     )
-    eval_data = load_pretrain_array(
+    eval_data, eval_channel_ids = load_pretrain_array(
         dataset_name=args.dataset,
         config_name=args.config,
         fs=args.fs,
@@ -153,6 +275,9 @@ def main() -> None:
         split=args.eval_split,
         scale=args.scale,
         max_samples=args.max_samples,
+        array_cache_dir=args.array_cache_dir,
+        overwrite_array_cache=args.overwrite_array_cache,
+        mmap_array_cache=args.mmap_array_cache,
     )
 
     timestamp = datetime.now().strftime("%y%m%d%H%M%S")
@@ -185,6 +310,15 @@ def main() -> None:
         "hyperbolic_depth": args.hyperbolic_depth,
         "hyperbolic_curvature": args.hyperbolic_curvature,
         "learnable_curvature": not args.fixed_curvature,
+        "use_setup_conditioned": args.use_setup_conditioned,
+        "setup_meta_dim": args.setup_meta_dim,
+        "setup_ctx_dim": args.setup_ctx_dim,
+        "setup_dim": args.setup_dim,
+        "setup_channel_vocab_size": args.setup_channel_vocab_size,
+        "setup_condition_scale": args.setup_condition_scale,
+        "use_variable_channel_frontend": args.use_variable_channel_frontend,
+        "per_channel_stem_depth": args.per_channel_stem_depth,
+        "channel_attn_heads": args.channel_attn_heads,
         "tf_align_weight": args.tf_align_weight,
         "tf_align_type": args.tf_align_type,
         "raw_mask_weight": args.raw_mask_weight,
@@ -202,6 +336,7 @@ def main() -> None:
         eval_start = datetime.now()
         eval_record = model.evaluate_loss(
             eval_data,
+            eval_channel_ids=eval_channel_ids,
             batch_size=args.batch_size,
             verbose=not args.no_progress,
             desc=f"Pretrain eval epoch {int(epoch_record['epoch'])}",
@@ -254,7 +389,12 @@ def main() -> None:
     )
     # Epoch summaries are printed by the callback after validation, so they
     # include train/eval/total time in one line.
-    loss_log = model.fit(train_data, n_epochs=args.epochs, verbose=False)
+    loss_log = model.fit(
+        train_data,
+        train_channel_ids=train_channel_ids,
+        n_epochs=args.epochs,
+        verbose=False,
+    )
 
     encoder_path = output_dir / "relation_cgeom_encoder_last.pt"
     best_path = output_dir / "relation_cgeom_encoder_best.pt"

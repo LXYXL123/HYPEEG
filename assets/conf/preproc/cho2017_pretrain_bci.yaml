@@ -1,0 +1,12 @@
+fs: 256
+output_root: assets/data/pretrain
+clean_middle_cache: true
+clean_shared_info: true
+num_preproc_arrow_writers: 4
+num_preproc_mid_workers: 8
+
+pretrain_dataset_configs:
+  cho2017: pretrain_bci
+
+pretrain_datasets: []
+finetune_datasets: {}

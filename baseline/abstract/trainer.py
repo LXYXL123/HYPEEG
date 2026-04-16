@@ -2,6 +2,7 @@
 Abstract trainer base class for baseline models.
 """
 import datetime
+import math
 import os
 import logging
 from abc import ABC, abstractmethod
@@ -739,9 +740,18 @@ class AbstractTrainer(ABC):
         # Gradient scaler for mixed precision
         scaler = torch.amp.GradScaler(enabled=self.cfg.training.use_amp)
 
-        # Learning rate scheduler
-        warmup_steps = len(train_loader) * self.cfg.training.warmup_epochs
-        total_steps = len(train_loader) * self.cfg.training.max_epochs
+        # Learning rate scheduler is stepped per optimizer update, not per
+        # micro-batch. With gradient accumulation this keeps the LR schedule
+        # equivalent to using a larger physical batch.
+        grad_accum_steps = max(1, int(getattr(self.cfg.training, "grad_accum_steps", 1)))
+        optimizer_steps_per_epoch = max(1, math.ceil(len(train_loader) / grad_accum_steps))
+        warmup_steps = max(1, optimizer_steps_per_epoch * self.cfg.training.warmup_epochs)
+        total_steps = max(1, optimizer_steps_per_epoch * self.cfg.training.max_epochs)
+        logger.info(
+            f"Optimizer schedule: {optimizer_steps_per_epoch} updates/epoch "
+            f"(micro_batches={len(train_loader)}, grad_accum_steps={grad_accum_steps}), "
+            f"total_steps={total_steps}"
+        )
 
         if self.cfg.training.lr_schedule == 'onecycle':
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -759,7 +769,7 @@ class AbstractTrainer(ABC):
             )
             cos_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=total_steps - warmup_steps,
+                T_max=max(1, total_steps - warmup_steps),
                 eta_min=self.cfg.training.min_lr
             )
             scheduler = torch.optim.lr_scheduler.SequentialLR(
@@ -1127,10 +1137,14 @@ class AbstractTrainer(ABC):
 
         train_sampler.set_epoch(self.epoch)
 
+        grad_accum_steps = max(1, int(getattr(self.cfg.training, "grad_accum_steps", 1)))
+        self.optimizer.zero_grad(set_to_none=True)
+        accum_loss_sum = torch.zeros(1, dtype=torch.float64, device=self.device)
+        accum_correct = torch.zeros(1, dtype=torch.float64, device=self.device)
+        accum_count = torch.zeros(1, dtype=torch.float64, device=self.device)
+
         batch: dict
         for step_in_epoch, batch in enumerate(train_loader):
-            self.optimizer.zero_grad()
-
             batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             labels = batch['label']
             ds_name = batch['montage'][0].split('/')[0]
@@ -1142,33 +1156,47 @@ class AbstractTrainer(ABC):
             if torch.isnan(loss):
                 logger.warning(f"NaN loss detected at step {self.current_step}")
 
-            # Backward pass
-            self.scaler.scale(loss).backward()
-            grad_norm = self._clip_grad_norm_()
+            # Backward pass. Divide by accumulation steps so the accumulated
+            # gradient matches a larger effective batch instead of increasing
+            # the learning-rate scale.
+            loss_for_backward = loss / grad_accum_steps
+            self.scaler.scale(loss_for_backward).backward()
 
-            # Optimizer step
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-
-            # Logging with distributed reduction
-            if self.current_step % self.cfg.logging.log_step_interval == 0:
-                # Calculate step accuracy
+            with torch.no_grad():
                 preds = torch.argmax(logits, dim=-1)
-                step_acc = (preds == labels).float().mean()
+                batch_size = labels.shape[0]
+                accum_loss_sum += loss.detach().double() * batch_size
+                accum_correct += (preds == labels).double().sum()
+                accum_count += batch_size
 
-                # Create tensors for distributed reduction
-                loss_tensor = loss.clone().detach()
-                acc_tensor = step_acc.clone().detach()
+            is_update_step = ((step_in_epoch + 1) % grad_accum_steps == 0) or ((step_in_epoch + 1) == len(train_loader))
+            grad_norm = 0.0
+            if is_update_step:
+                grad_norm = self._clip_grad_norm_()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+
+            # Logging with distributed reduction. current_step counts optimizer
+            # updates, so logging remains comparable across grad_accum settings.
+            if is_update_step and self.current_step % self.cfg.logging.log_step_interval == 0:
+                # Report metrics over the full accumulation window, not only
+                # the final micro-batch that triggered optimizer.step().
+                loss_tensor = accum_loss_sum.clone().detach()
+                correct_tensor = accum_correct.clone().detach()
+                count_tensor = accum_count.clone().detach()
 
                 torch.distributed.all_reduce(loss_tensor, op=torch.distributed.ReduceOp.AVG)
-                torch.distributed.all_reduce(acc_tensor, op=torch.distributed.ReduceOp.AVG)
+                torch.distributed.all_reduce(correct_tensor, op=torch.distributed.ReduceOp.SUM)
+                torch.distributed.all_reduce(count_tensor, op=torch.distributed.ReduceOp.SUM)
+                loss_mean = loss_tensor / torch.clamp(count_tensor / get_world_size(), min=1.0)
+                acc_mean = correct_tensor / torch.clamp(count_tensor, min=1.0)
 
                 if get_is_master():
                     log_data = {
                         'train/epoch': self.epoch,
                         'train/step': self.current_step,
-                        'train/loss_ce': loss_tensor.cpu().item(),
-                        'train/acc': acc_tensor.cpu().item(),
+                        'train/loss_ce': loss_mean.cpu().item(),
+                        'train/acc': acc_mean.cpu().item(),
                         'train/grad_norm': grad_norm,
                         'train/header_lr': self.get_current_lr()[0],
                     }
@@ -1185,8 +1213,13 @@ class AbstractTrainer(ABC):
 
                     logger.info(format_console_log_dict(log_data, prefix='train'))
 
-            self.current_step += 1
-            self.scheduler.step()
+            if is_update_step:
+                self.optimizer.zero_grad(set_to_none=True)
+                accum_loss_sum.zero_()
+                accum_correct.zero_()
+                accum_count.zero_()
+                self.current_step += 1
+                self.scheduler.step()
 
     def eval_step(self, batch, labels):
         with torch.amp.autocast('cuda', enabled=self.cfg.training.use_amp, dtype=torch.bfloat16):

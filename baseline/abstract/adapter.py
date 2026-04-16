@@ -22,7 +22,11 @@ class AbstractDatasetAdapter(Dataset, ABC):
     
     def __init__(self, dataset: HFDataset, dataset_names: List[str], dataset_configs: List[str]):
         self.model_name = ''
-        self.dataset = dataset
+        # Avoid relying on HuggingFace's torch formatter inside worker
+        # processes. With NumPy 2.x, datasets can fail on object/string columns
+        # via np.array(..., copy=False). The adapter converts arrays to tensors
+        # explicitly below, so an unformatted dataset is safer here.
+        self.dataset = dataset.with_format(None) if hasattr(dataset, 'with_format') else dataset
         self.dataset_names = dataset_names
         self.dataset_configs = dataset_configs
         self.montage_mappings = {}
@@ -110,8 +114,11 @@ class AbstractDatasetAdapter(Dataset, ABC):
         # Apply model-specific data processing
         data_processed = self._apply_model_specific_processing(data_mapped, montage_info)
         
-        # Get selected channel names
-        chs = sample['chs'][montage_info['sel']]
+        # Get selected channel ids. ``sample['chs']`` can be a Python list when
+        # the dataset format is reset to avoid NumPy 2 / datasets formatter
+        # issues, so convert before boolean indexing.
+        sample_chs = torch.as_tensor(sample['chs'], dtype=torch.long)
+        chs = sample_chs[selector]
         
         # Convert indices to tensor
         chans_id = torch.tensor(montage_info['idx'], dtype=torch.long)

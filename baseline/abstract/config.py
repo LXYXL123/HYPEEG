@@ -76,6 +76,7 @@ class BaseLoRAArgs(BaseModel):
 class BaseTrainingArgs(BaseModel):
     """Base training configuration."""
     max_epochs: int = 100
+    grad_accum_steps: int = 1
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
 
