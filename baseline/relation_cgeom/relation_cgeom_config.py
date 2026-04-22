@@ -18,6 +18,7 @@ class RelationCGeomDataArgs(BaseDataArgs):
 class RelationCGeomModelArgs(BaseModelArgs):
     pretrained_path: Optional[str] = None
 
+    architecture: str = "default"
     output_dims: int = 320
     hidden_dims: int = 64
     depth: int = 10
@@ -54,6 +55,15 @@ class RelationCGeomModelArgs(BaseModelArgs):
     use_variable_channel_frontend: bool = False
     per_channel_stem_depth: int = 2
     channel_attn_heads: int = 4
+    spectral_dims: int = 64
+    spectral_win_len: int = 64
+    spectral_stride: int = 32
+    spectral_freq_low: float = 4.0
+    spectral_freq_high: float = 40.0
+    spectral_mixer_depth: int = 1
+    use_heegnet_lorentz: bool = False
+    heegnet_lorentz_dim: int = 65
+    use_heegnet_lorentz_classifier: bool = False
 
     mask_mode: str = "binomial"
     downstream_mask: Optional[str] = "all_true"
@@ -112,7 +122,9 @@ class RelationCGeomConfig(AbstractConfig):
             return False
         if self.model.depth <= 0:
             return False
-        if not self.model.use_complex_branch:
+        if self.model.architecture not in ["default", "spectral_lite"]:
+            return False
+        if self.model.architecture != "spectral_lite" and not self.model.use_complex_branch:
             return False
         if self.model.hyperbolic_depth <= 0:
             return False
@@ -141,6 +153,30 @@ class RelationCGeomConfig(AbstractConfig):
         if self.model.per_channel_stem_depth < 0:
             return False
         if self.model.channel_attn_heads <= 0:
+            return False
+        if self.model.architecture == "spectral_lite" and not self.model.use_setup_conditioned:
+            return False
+        if self.model.architecture == "spectral_lite" and not self.model.use_variable_channel_frontend:
+            return False
+        if self.model.spectral_dims <= 0:
+            return False
+        if self.model.spectral_win_len <= 0:
+            return False
+        if self.model.spectral_stride <= 0:
+            return False
+        if self.model.spectral_freq_low < 0:
+            return False
+        if self.model.spectral_freq_high <= self.model.spectral_freq_low:
+            return False
+        if self.model.spectral_mixer_depth < 0:
+            return False
+        if self.model.heegnet_lorentz_dim <= 2:
+            return False
+        if self.model.use_heegnet_lorentz and self.model.architecture != "spectral_lite":
+            return False
+        if self.model.use_heegnet_lorentz and not self.model.use_hyper_relation:
+            return False
+        if self.model.use_heegnet_lorentz and not self.model.use_setup_conditioned:
             return False
         if self.model.band_fusion_type not in ["concat_linear", "gated_sum"]:
             return False

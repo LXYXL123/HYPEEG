@@ -47,6 +47,13 @@ class TS2VecThreeBranchHypRelationCGeom:
         use_variable_channel_frontend=False,
         per_channel_stem_depth=2,
         channel_attn_heads=4,
+        architecture='default',
+        spectral_dims=64,
+        spectral_win_len=64,
+        spectral_stride=32,
+        spectral_freq_low=4.0,
+        spectral_freq_high=40.0,
+        spectral_mixer_depth=1,
         tf_align_weight=0.3,
         tf_align_type='cosine',
         raw_mask_weight=0.0,
@@ -91,6 +98,13 @@ class TS2VecThreeBranchHypRelationCGeom:
             use_variable_channel_frontend=use_variable_channel_frontend,
             per_channel_stem_depth=per_channel_stem_depth,
             channel_attn_heads=channel_attn_heads,
+            architecture=architecture,
+            spectral_dims=spectral_dims,
+            spectral_win_len=spectral_win_len,
+            spectral_stride=spectral_stride,
+            spectral_freq_low=spectral_freq_low,
+            spectral_freq_high=spectral_freq_high,
+            spectral_mixer_depth=spectral_mixer_depth,
         ).to(self.device)
         if self.distributed:
             self._train_net = torch.nn.parallel.DistributedDataParallel(

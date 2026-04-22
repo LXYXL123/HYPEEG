@@ -73,7 +73,7 @@ def load_full_model_checkpoint(model: torch.nn.Module, ckpt_path: str, device: t
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--conf-file", default="baseline/relation_cgeom/relation_cgeom_bcic2a_setup_conditioned.yaml")
+    parser.add_argument("--conf-file", default="baseline/relation_cgeom/relation_cgeom_bcic2a_spectral_lite.yaml")
     parser.add_argument("--ckpt", default=None, help="Optional downstream full-model checkpoint to inspect.")
     parser.add_argument("--split", choices=sorted(SPLIT_MAP), default="test")
     parser.add_argument("--dataset", default="bcic_2a")

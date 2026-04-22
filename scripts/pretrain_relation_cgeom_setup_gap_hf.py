@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Setup-gap invariance plus light batch discrimination for relation_cgeom.
+"""Prototype self-distillation pretraining for relation_cgeom.
 
-This script is the single pretraining path for the current
-Setup-Conditioned Hierarchical Relation-CGeom model:
+This script is the single self-supervised pretraining path for the current
+Setup-Conditioned Relation-CGeom model:
 
-  teacher weak view -> EMA encoder targets
-  student corrupted views -> predictor heads -> invariance + discrimination
+  teacher weak view -> EMA encoder targets -> per-dataset prototype targets
+  student corrupted views -> shared main projector -> prototype matching
 
-It intentionally does not use the old TS2Vec objective.
+The main supervision is on main_global, with a light relation_global
+consistency term. It intentionally does not use TS2Vec or instance InfoNCE.
 """
 
 from __future__ import annotations
@@ -27,15 +28,27 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from common.distributed.env import (  # noqa: E402
+    clean_torch_distributed,
+    get_global_rank,
+    get_is_master,
+    get_local_rank,
+    get_master_addr,
+    get_master_port,
+    get_world_size,
+)
 
 from baseline.relation_cgeom.encoder_three_branch_hyp_relation_cgeom import (  # noqa: E402
     TSEncoderThreeBranchHypRelationCGeom,
@@ -61,61 +74,102 @@ class PretrainDataset:
         return f"{self.dataset}/{self.config}"
 
 
-class PredictorHead(nn.Module):
-    """Small student-only predictor used for distillation targets."""
+class MainProjector(nn.Module):
+    """Shared projector for main_global before prototype assignment."""
 
-    def __init__(self, dim: int):
+    def __init__(self, input_dim: int, proj_dim: int):
         super().__init__()
         self.net = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, dim),
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, input_dim),
             nn.GELU(),
-            nn.Linear(dim, dim),
+            nn.Linear(input_dim, proj_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 
-class FeatureQueue:
-    """Detached FIFO queue of teacher main_global features for extra negatives."""
+class MultiDatasetPrototypeHeads(nn.Module):
+    """Per-dataset prototype heads over projected main_global."""
 
-    def __init__(self, dim: int, size: int, device: torch.device):
-        self.size = int(size)
-        self.ptr = 0
-        self.full = False
-        self.buffer = torch.empty(self.size, dim, dtype=torch.float32, device=device) if self.size > 0 else None
+    def __init__(self, dataset_keys: list[str], input_dim: int, num_prototypes: int):
+        super().__init__()
+        self.heads = nn.ModuleDict({
+            dataset_key: nn.Linear(input_dim, num_prototypes, bias=False)
+            for dataset_key in dataset_keys
+        })
 
-    def get(self) -> torch.Tensor | None:
-        if self.buffer is None:
-            return None
-        n_valid = self.size if self.full else self.ptr
-        if n_valid <= 0:
-            return None
-        return self.buffer[:n_valid].detach()
+    def forward(self, x: torch.Tensor, dataset_key: str) -> torch.Tensor:
+        return self.heads[dataset_key](x)
 
-    @torch.no_grad()
-    def enqueue(self, features: torch.Tensor) -> None:
-        if self.buffer is None:
-            return
-        features = features.detach().to(device=self.buffer.device, dtype=self.buffer.dtype)
-        if features.ndim != 2 or features.numel() == 0:
-            return
-        if features.size(0) >= self.size:
-            self.buffer.copy_(features[-self.size:])
-            self.ptr = 0
-            self.full = True
-            return
 
-        end = self.ptr + features.size(0)
-        if end <= self.size:
-            self.buffer[self.ptr:end].copy_(features)
-        else:
-            first = self.size - self.ptr
-            self.buffer[self.ptr:].copy_(features[:first])
-            self.buffer[:end - self.size].copy_(features[first:])
-        self.ptr = end % self.size
-        self.full = self.full or end >= self.size
+def print0(*args, **kwargs) -> None:
+    if get_is_master():
+        print(*args, **kwargs)
+
+
+def is_distributed() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def unwrap_model(module: nn.Module) -> nn.Module:
+    return module.module if isinstance(module, DDP) else module
+
+
+def broadcast_path(path: Path | None) -> Path:
+    if not is_distributed():
+        assert path is not None
+        return path
+    obj_list = [str(path) if path is not None else ""]
+    dist.broadcast_object_list(obj_list, src=0)
+    return Path(obj_list[0])
+
+
+def setup_runtime(args: argparse.Namespace) -> tuple[torch.device, bool]:
+    world_size = get_world_size()
+    distributed = world_size > 1
+    if distributed:
+        rank = get_global_rank()
+        local_rank = get_local_rank()
+        master_addr = get_master_addr()
+        master_port = get_master_port(
+            job_id=int(os.environ.get("SLURM_JOB_ID", -1)),
+            port=int(os.environ.get("MASTER_PORT", 29500)),
+            is_port_random=False,
+        )
+        os.environ["RANK"] = str(rank)
+        os.environ["WORLD_SIZE"] = str(world_size)
+        os.environ["MASTER_ADDR"] = master_addr
+        os.environ["MASTER_PORT"] = str(master_port)
+        os.environ["LOCAL_RANK"] = str(local_rank)
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl")
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device(args.device)
+    return device, distributed
+
+
+def reduce_metric_sums(metric_sums: dict[str, float], count: int, device: torch.device) -> tuple[dict[str, float], int]:
+    if not is_distributed():
+        return metric_sums, count
+    keys = sorted(metric_sums.keys())
+    values = [float(metric_sums[key]) for key in keys]
+    payload = torch.tensor(values + [float(count)], dtype=torch.float64, device=device)
+    dist.all_reduce(payload, op=dist.ReduceOp.SUM)
+    reduced = {key: float(payload[idx].item()) for idx, key in enumerate(keys)}
+    reduced_count = int(payload[-1].item())
+    return reduced, reduced_count
+
+
+def reduce_count_dict(count_dict: dict[str, int], device: torch.device) -> dict[str, int]:
+    if not is_distributed():
+        return count_dict
+    keys = sorted(count_dict.keys())
+    payload = torch.tensor([float(count_dict[key]) for key in keys], dtype=torch.float64, device=device)
+    dist.all_reduce(payload, op=dist.ReduceOp.SUM)
+    return {key: int(payload[idx].item()) for idx, key in enumerate(keys)}
 
 
 def parse_dataset_configs(spec: str) -> list[tuple[str, str]]:
@@ -199,7 +253,7 @@ def load_datasets(args: argparse.Namespace) -> list[PretrainDataset]:
                 eval_channel_ids=eval_channel_ids,
             )
         )
-        print(
+        print0(
             f"Loaded {dataset_name}/{config_name}: "
             f"train={train_data.shape}, eval={eval_data.shape}",
             flush=True,
@@ -208,7 +262,7 @@ def load_datasets(args: argparse.Namespace) -> list[PretrainDataset]:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Setup-gap invariance pretraining for relation_cgeom.")
+    parser = argparse.ArgumentParser(description="Prototype self-distillation pretraining for relation_cgeom.")
     parser.add_argument(
         "--dataset-configs",
         default="motor_mv_img:pretrain_bci,cho2017:pretrain_bci",
@@ -245,19 +299,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup-ratio", type=float, default=0.05)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--ema-momentum", type=float, default=0.995)
-    parser.add_argument("--lambda-rel", type=float, default=1.0)
-    parser.add_argument("--lambda-disc-max", type=float, default=0.05)
-    parser.add_argument("--disc-tau", type=float, default=0.2)
-    parser.add_argument(
-        "--disc-queue-size",
-        type=int,
-        default=512,
-        help="Per-dataset teacher main_global queue size used as extra InfoNCE negatives.",
-    )
+    parser.add_argument("--lambda-rel", type=float, default=0.1)
+    parser.add_argument("--proto-dim", type=int, default=256)
+    parser.add_argument("--num-prototypes", type=int, default=64)
+    parser.add_argument("--proto-teacher-temp", type=float, default=0.10)
+    parser.add_argument("--proto-teacher-temp-start", type=float, default=0.20)
+    parser.add_argument("--proto-teacher-temp-warmup-ratio", type=float, default=0.30)
+    parser.add_argument("--proto-student-temp", type=float, default=0.10)
+    parser.add_argument("--proto-center-momentum", type=float, default=0.9)
+    parser.add_argument("--lambda-proto-balance", type=float, default=0.1)
 
     parser.add_argument("--repr-dims", type=int, default=320)
     parser.add_argument("--hidden-dims", type=int, default=64)
     parser.add_argument("--depth", type=int, default=7)
+    parser.add_argument("--architecture", default="default", choices=["default", "spectral_lite"])
     parser.add_argument("--bands", default="8-13,13-20,20-30")
     parser.add_argument("--share-band-encoder", action="store_true")
     parser.add_argument("--disable-raw-branch", action="store_true")
@@ -277,6 +332,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-variable-channel-frontend", action="store_true")
     parser.add_argument("--per-channel-stem-depth", type=int, default=2)
     parser.add_argument("--channel-attn-heads", type=int, default=4)
+    parser.add_argument("--spectral-dims", type=int, default=64)
+    parser.add_argument("--spectral-win-len", type=int, default=64)
+    parser.add_argument("--spectral-stride", type=int, default=32)
+    parser.add_argument("--spectral-freq-low", type=float, default=4.0)
+    parser.add_argument("--spectral-freq-high", type=float, default=40.0)
+    parser.add_argument("--spectral-mixer-depth", type=int, default=1)
+    parser.add_argument("--use-heegnet-lorentz", action="store_true")
+    parser.add_argument("--heegnet-lorentz-dim", type=int, default=65)
     parser.add_argument("--mask-mode", default="binomial")
 
     parser.add_argument("--use-amp", action="store_true")
@@ -293,10 +356,11 @@ def build_model_config(args: argparse.Namespace) -> dict:
         "output_dims": args.repr_dims,
         "hidden_dims": args.hidden_dims,
         "depth": args.depth,
+        "architecture": args.architecture,
         "sampling_rate": float(args.fs),
         "bands": parse_bands(args.bands),
         "use_raw_branch": not args.disable_raw_branch,
-        "use_complex_branch": True,
+        "use_complex_branch": args.architecture != "spectral_lite",
         "use_hyperbolic_branch": not args.disable_hyperbolic_branch,
         "share_band_encoder": args.share_band_encoder,
         "band_fusion_type": args.band_fusion_type,
@@ -316,6 +380,14 @@ def build_model_config(args: argparse.Namespace) -> dict:
         ),
         "per_channel_stem_depth": args.per_channel_stem_depth,
         "channel_attn_heads": args.channel_attn_heads,
+        "spectral_dims": args.spectral_dims,
+        "spectral_win_len": args.spectral_win_len,
+        "spectral_stride": args.spectral_stride,
+        "spectral_freq_low": args.spectral_freq_low,
+        "spectral_freq_high": args.spectral_freq_high,
+        "spectral_mixer_depth": args.spectral_mixer_depth,
+        "use_heegnet_lorentz": args.use_heegnet_lorentz,
+        "heegnet_lorentz_dim": args.heegnet_lorentz_dim,
         "mask_mode": args.mask_mode,
     }
 
@@ -330,13 +402,14 @@ def make_output_dir(args: argparse.Namespace, datasets: list[PretrainDataset]) -
 
     timestamp = datetime.now().strftime("%y%m%d%H%M%S")
     dataset_part = "_".join(f"{ds.dataset}-{ds.config}" for ds in datasets)
+    prefix = "proto_balanced_distill" if args.architecture == "default" else f"proto_balanced_distill_{args.architecture}"
     output_dir = (
         PROJECT_ROOT
         / "assets"
         / "run"
         / "pretrain"
         / "relation_cgeom"
-        / f"setup_gap_disc_{dataset_part}"
+        / f"{prefix}_{dataset_part}"
         / f"local_{timestamp}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -349,20 +422,41 @@ def make_loaders(
     eval_batch_size: int,
     num_workers: int,
     pin_memory: bool,
-) -> tuple[list[DataLoader], list[DataLoader]]:
+    distributed: bool,
+) -> tuple[list[DataLoader], list[DataLoader], list[DistributedSampler | None]]:
     train_loaders = []
     eval_loaders = []
+    train_samplers = []
+    world_size = get_world_size()
+    rank = get_global_rank()
     for ds in datasets:
         train_dataset = TensorDataset(
             torch.from_numpy(ds.train_data).to(torch.float),
             torch.from_numpy(ds.train_channel_ids).to(torch.long),
         )
-        if len(train_dataset) < batch_size:
-            raise RuntimeError(f"{ds.label} has fewer train samples than batch_size={batch_size}.")
+        if distributed:
+            per_rank_train = len(train_dataset) // max(1, world_size)
+            if per_rank_train < batch_size:
+                raise RuntimeError(
+                    f"{ds.label} has only {per_rank_train} train samples per rank for world_size={world_size}, "
+                    f"smaller than batch_size={batch_size}."
+                )
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=True,
+                drop_last=True,
+            )
+        else:
+            train_sampler = None
+            if len(train_dataset) < batch_size:
+                raise RuntimeError(f"{ds.label} has fewer train samples than batch_size={batch_size}.")
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=train_sampler is None,
+            sampler=train_sampler,
             drop_last=True,
             num_workers=num_workers,
             pin_memory=pin_memory,
@@ -371,21 +465,32 @@ def make_loaders(
             torch.from_numpy(ds.eval_data).to(torch.float),
             torch.from_numpy(ds.eval_channel_ids).to(torch.long),
         )
+        eval_sampler = None
+        if distributed:
+            eval_sampler = DistributedSampler(
+                eval_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=False,
+                drop_last=False,
+            )
         eval_loader = DataLoader(
             eval_dataset,
             batch_size=eval_batch_size,
             shuffle=False,
+            sampler=eval_sampler,
             drop_last=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
         )
         train_loaders.append(train_loader)
         eval_loaders.append(eval_loader)
-        print(
+        train_samplers.append(train_sampler)
+        print0(
             f"Loaders {ds.label}: train_batches={len(train_loader)} eval_batches={len(eval_loader)}",
             flush=True,
         )
-    return train_loaders, eval_loaders
+    return train_loaders, eval_loaders, train_samplers
 
 
 def next_batch(loaders: list[DataLoader], iterators: list, dataset_idx: int):
@@ -511,8 +616,8 @@ def make_teacher_view(x: torch.Tensor, args: argparse.Namespace, bands) -> torch
 def make_student_view(x: torch.Tensor, args: argparse.Namespace, bands) -> torch.Tensor:
     return augment_view(
         x,
-        time_mask_ratio=0.15,
-        channel_dropout_ratio=0.15,
+        time_mask_ratio=0.10,
+        channel_dropout_ratio=0.10,
         noise_std=0.01,
         amplitude_low=0.95,
         amplitude_high=1.05,
@@ -549,36 +654,58 @@ def cos_loss(u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     return 1.0 - cos_sim(u, v)
 
 
-def info_nce(anchor: torch.Tensor, target: torch.Tensor, tau: float, queue: torch.Tensor | None = None) -> torch.Tensor:
-    """Batch InfoNCE over current teacher targets plus optional queued negatives.
-
-    anchor: [B, D], student predictor output
-    target: [B, D], matching EMA teacher target
-    queue: [Q, D], detached extra negatives
-    """
-    anchor = F.normalize(anchor, dim=-1)
-    target = F.normalize(target, dim=-1)
-    candidates = target if queue is None else torch.cat([target, F.normalize(queue.to(target.device), dim=-1)], dim=0)
-    logits = anchor @ candidates.T / tau
-    labels = torch.arange(anchor.size(0), device=anchor.device)
-    return F.cross_entropy(logits, labels)
+def prototype_target_distribution(
+    teacher_logits: torch.Tensor,
+    center: torch.Tensor,
+    teacher_temp: float,
+) -> torch.Tensor:
+    centered_logits = (teacher_logits - center.unsqueeze(0)) / max(teacher_temp, 1e-6)
+    return F.softmax(centered_logits, dim=-1)
 
 
-def disc_accuracy_in_batch(anchor: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    anchor = F.normalize(anchor, dim=-1)
-    target = F.normalize(target, dim=-1)
-    pred = torch.argmax(anchor @ target.T, dim=-1)
-    labels = torch.arange(anchor.size(0), device=anchor.device)
-    return (pred == labels).to(torch.float32).mean()
+def soft_cross_entropy(student_logits: torch.Tensor, teacher_probs: torch.Tensor, student_temp: float) -> torch.Tensor:
+    student_log_probs = F.log_softmax(student_logits / max(student_temp, 1e-6), dim=-1)
+    return -(teacher_probs * student_log_probs).sum(dim=-1).mean()
 
 
-def get_lambda_disc(progress: float, lambda_disc_max: float) -> float:
-    progress = min(1.0, max(0.0, float(progress)))
-    if progress < 0.10:
-        return 0.0
-    if progress < 0.30:
-        return float(lambda_disc_max) * (progress - 0.10) / 0.20
-    return float(lambda_disc_max)
+def prototype_balance_loss(student_probs_a: torch.Tensor, student_probs_b: torch.Tensor) -> torch.Tensor:
+    """Encourage each batch to use prototypes broadly without using labels."""
+    probs = 0.5 * (student_probs_a.mean(dim=0) + student_probs_b.mean(dim=0))
+    uniform = torch.full_like(probs, 1.0 / probs.numel())
+    return F.kl_div(probs.clamp_min(1e-8).log(), uniform, reduction="batchmean")
+
+
+def distribution_entropy(probs: torch.Tensor) -> torch.Tensor:
+    probs = probs.clamp_min(1e-8)
+    return -(probs * probs.log()).sum(dim=-1).mean()
+
+
+@torch.no_grad()
+def update_proto_center(center: torch.Tensor, teacher_logits: torch.Tensor, momentum: float) -> None:
+    batch_center = teacher_logits.detach().float().mean(dim=0)
+    if is_distributed():
+        dist.all_reduce(batch_center, op=dist.ReduceOp.SUM)
+        batch_center /= float(get_world_size())
+    center.mul_(momentum).add_(batch_center, alpha=1.0 - momentum)
+
+
+def active_proto_count(teacher_probs: torch.Tensor) -> torch.Tensor:
+    assignments = teacher_probs.argmax(dim=-1)
+    return torch.tensor(float(assignments.unique().numel()), device=teacher_probs.device)
+
+
+def prototype_usage_perplexity(probs: torch.Tensor) -> torch.Tensor:
+    mean_probs = probs.mean(dim=0).clamp_min(1e-8)
+    entropy = -(mean_probs * mean_probs.log()).sum()
+    return entropy.exp()
+
+
+def get_teacher_temperature(args: argparse.Namespace, progress: float) -> float:
+    warmup_ratio = max(float(args.proto_teacher_temp_warmup_ratio), 1e-8)
+    if progress >= warmup_ratio:
+        return float(args.proto_teacher_temp)
+    alpha = max(0.0, min(1.0, progress / warmup_ratio))
+    return float(args.proto_teacher_temp_start + alpha * (args.proto_teacher_temp - args.proto_teacher_temp_start))
 
 
 def batch_std(x: torch.Tensor) -> torch.Tensor:
@@ -599,14 +726,17 @@ def mean_debug_scalar(aux: dict, key: str, index: int | None = None) -> float | 
 def compute_step_loss(
     student: nn.Module,
     teacher: nn.Module,
-    predictor_main: nn.Module,
-    predictor_rel: nn.Module,
+    student_projector: nn.Module,
+    teacher_projector: nn.Module,
+    student_proto_heads: MultiDatasetPrototypeHeads,
+    teacher_proto_heads: MultiDatasetPrototypeHeads,
+    proto_centers: dict[str, torch.Tensor],
+    dataset_key: str,
     x: torch.Tensor,
     channel_ids: torch.Tensor,
     args: argparse.Namespace,
     bands: tuple[tuple[float, float], ...],
-    lambda_disc: float,
-    disc_queue: FeatureQueue | None = None,
+    progress: float,
 ) -> tuple[torch.Tensor, dict, torch.Tensor]:
     x_teacher = make_teacher_view(x, args, bands)
     x_student_a = make_student_view(x, args, bands)
@@ -616,49 +746,64 @@ def compute_step_loss(
         main_t, rel_t, _ = forward_globals(teacher, x_teacher, channel_ids, args.fs)
         main_t = main_t.detach()
         rel_t = rel_t.detach()
+        proj_t = F.normalize(teacher_projector(main_t), dim=-1)
+        logits_t = teacher_proto_heads(proj_t, dataset_key)
+        teacher_temp = get_teacher_temperature(args, progress)
+        proto_targets = prototype_target_distribution(
+            logits_t,
+            center=proto_centers[dataset_key],
+            teacher_temp=teacher_temp,
+        ).detach()
 
     main_a, rel_a, aux_a = forward_globals(student, x_student_a, channel_ids, args.fs)
     main_b, rel_b, _ = forward_globals(student, x_student_b, channel_ids, args.fs)
 
-    pred_main_a = predictor_main(main_a)
-    pred_main_b = predictor_main(main_b)
-    pred_rel_a = predictor_rel(rel_a)
-    pred_rel_b = predictor_rel(rel_b)
+    proj_a = F.normalize(student_projector(main_a), dim=-1)
+    proj_b = F.normalize(student_projector(main_b), dim=-1)
+    logits_a = student_proto_heads(proj_a, dataset_key)
+    logits_b = student_proto_heads(proj_b, dataset_key)
 
-    loss_main_inv_a = cos_loss(pred_main_a, main_t)
-    loss_relation_inv_a = cos_loss(pred_rel_a, rel_t)
-    loss_main_inv_b = cos_loss(pred_main_b, main_t)
-    loss_relation_inv_b = cos_loss(pred_rel_b, rel_t)
-    loss_inv = (
-        loss_main_inv_a
-        + args.lambda_rel * loss_relation_inv_a
-        + loss_main_inv_b
-        + args.lambda_rel * loss_relation_inv_b
+    loss_proto_a = soft_cross_entropy(logits_a, proto_targets, student_temp=args.proto_student_temp)
+    loss_proto_b = soft_cross_entropy(logits_b, proto_targets, student_temp=args.proto_student_temp)
+    loss_proto_main = 0.5 * (loss_proto_a + loss_proto_b)
+
+    loss_rel_a = cos_loss(rel_a, rel_t)
+    loss_rel_b = cos_loss(rel_b, rel_t)
+    loss_rel_cons = 0.5 * (loss_rel_a + loss_rel_b)
+
+    student_probs_a = F.softmax(logits_a.detach() / max(args.proto_student_temp, 1e-6), dim=-1)
+    student_probs_b = F.softmax(logits_b.detach() / max(args.proto_student_temp, 1e-6), dim=-1)
+    balance_probs_a = F.softmax(logits_a / max(args.proto_student_temp, 1e-6), dim=-1)
+    balance_probs_b = F.softmax(logits_b / max(args.proto_student_temp, 1e-6), dim=-1)
+    loss_proto_balance = prototype_balance_loss(balance_probs_a, balance_probs_b)
+    loss_total = (
+        loss_proto_main
+        + args.lambda_rel * loss_rel_cons
+        + args.lambda_proto_balance * loss_proto_balance
     )
-
-    queued_targets = None if disc_queue is None else disc_queue.get()
-    loss_disc_a = info_nce(pred_main_a, main_t, tau=args.disc_tau, queue=queued_targets)
-    loss_disc_b = info_nce(pred_main_b, main_t, tau=args.disc_tau, queue=queued_targets)
-    loss_disc = 0.5 * (loss_disc_a + loss_disc_b)
-    loss_total = loss_inv + float(lambda_disc) * loss_disc
 
     metrics = {
         "loss_total": loss_total.detach(),
-        "loss_inv": loss_inv.detach(),
-        "loss_disc": loss_disc.detach(),
-        "loss_main_inv_a": loss_main_inv_a.detach(),
-        "loss_relation_inv_a": loss_relation_inv_a.detach(),
-        "loss_main_inv_b": loss_main_inv_b.detach(),
-        "loss_relation_inv_b": loss_relation_inv_b.detach(),
-        "lambda_disc": float(lambda_disc),
-        "disc_queue_size": 0 if queued_targets is None else int(queued_targets.size(0)),
-        "disc_acc_in_batch": disc_accuracy_in_batch(pred_main_a.detach(), main_t).detach(),
-        "cos_sim_main_at": cos_sim(pred_main_a.detach(), main_t).detach(),
-        "cos_sim_rel_at": cos_sim(pred_rel_a.detach(), rel_t).detach(),
-        "cos_sim_main_bt": cos_sim(pred_main_b.detach(), main_t).detach(),
-        "cos_sim_rel_bt": cos_sim(pred_rel_b.detach(), rel_t).detach(),
+        "loss_proto_main": loss_proto_main.detach(),
+        "loss_proto_a": loss_proto_a.detach(),
+        "loss_proto_b": loss_proto_b.detach(),
+        "loss_proto_balance": loss_proto_balance.detach(),
+        "loss_rel_cons": loss_rel_cons.detach(),
+        "loss_rel_a": loss_rel_a.detach(),
+        "loss_rel_b": loss_rel_b.detach(),
+        "cos_sim_main_at": cos_sim(main_a.detach(), main_t).detach(),
+        "cos_sim_rel_at": cos_sim(rel_a.detach(), rel_t).detach(),
+        "cos_sim_main_bt": cos_sim(main_b.detach(), main_t).detach(),
+        "cos_sim_rel_bt": cos_sim(rel_b.detach(), rel_t).detach(),
         "std_main_global_batch": batch_std(main_a.detach()).detach(),
         "std_relation_global_batch": batch_std(rel_a.detach()).detach(),
+        "teacher_entropy": distribution_entropy(proto_targets).detach(),
+        "student_entropy_a": distribution_entropy(student_probs_a).detach(),
+        "student_entropy_b": distribution_entropy(student_probs_b).detach(),
+        "active_proto_count": active_proto_count(proto_targets).detach(),
+        "proto_usage_perplexity": prototype_usage_perplexity(proto_targets).detach(),
+        "teacher_temp": float(teacher_temp),
+        "lambda_proto_balance": float(args.lambda_proto_balance),
     }
     for idx in range(3):
         value = mean_debug_scalar(aux_a, "band_weights", idx)
@@ -668,7 +813,7 @@ def compute_step_loss(
         value = mean_debug_scalar(aux_a, key)
         if value is not None:
             metrics[key] = value
-    return loss_total, metrics, main_t.detach()
+    return loss_total, metrics, logits_t.detach()
 
 
 def to_float(value) -> float:
@@ -702,24 +847,28 @@ def build_scheduler(optimizer: torch.optim.Optimizer, total_steps: int, warmup_r
 
 
 @torch.no_grad()
-def update_ema_teacher(student: nn.Module, teacher: nn.Module, momentum: float) -> None:
-    for teacher_param, student_param in zip(teacher.parameters(), student.parameters()):
+def update_ema_module(student_module: nn.Module, teacher_module: nn.Module, momentum: float) -> None:
+    student_module = unwrap_model(student_module)
+    teacher_module = unwrap_model(teacher_module)
+    for teacher_param, student_param in zip(teacher_module.parameters(), student_module.parameters()):
         teacher_param.data.mul_(momentum).add_(student_param.data, alpha=1.0 - momentum)
-    for teacher_buffer, student_buffer in zip(teacher.buffers(), student.buffers()):
+    for teacher_buffer, student_buffer in zip(teacher_module.buffers(), student_module.buffers()):
         teacher_buffer.copy_(student_buffer)
 
 
 def optimizer_update(
     student: nn.Module,
     teacher: nn.Module,
-    predictor_main: nn.Module,
-    predictor_rel: nn.Module,
+    student_projector: nn.Module,
+    teacher_projector: nn.Module,
+    student_proto_heads: MultiDatasetPrototypeHeads,
+    teacher_proto_heads: MultiDatasetPrototypeHeads,
     optimizer: torch.optim.Optimizer,
     scheduler,
     scaler: torch.amp.GradScaler,
     args: argparse.Namespace,
 ) -> None:
-    params = list(student.parameters()) + list(predictor_main.parameters()) + list(predictor_rel.parameters())
+    params = list(student.parameters()) + list(student_projector.parameters()) + list(student_proto_heads.parameters())
     if scaler.is_enabled():
         if args.grad_clip and args.grad_clip > 0:
             scaler.unscale_(optimizer)
@@ -732,63 +881,65 @@ def optimizer_update(
         optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     scheduler.step()
-    update_ema_teacher(student, teacher, momentum=args.ema_momentum)
+    update_ema_module(student, teacher, momentum=args.ema_momentum)
+    update_ema_module(student_projector, teacher_projector, momentum=args.ema_momentum)
+    update_ema_module(student_proto_heads, teacher_proto_heads, momentum=args.ema_momentum)
 
 
 @torch.no_grad()
 def evaluate_loss(
     student: nn.Module,
     teacher: nn.Module,
-    predictor_main: nn.Module,
-    predictor_rel: nn.Module,
+    student_projector: nn.Module,
+    teacher_projector: nn.Module,
+    student_proto_heads: MultiDatasetPrototypeHeads,
+    teacher_proto_heads: MultiDatasetPrototypeHeads,
+    proto_centers: dict[str, torch.Tensor],
     eval_loaders: list[DataLoader],
     datasets: list[PretrainDataset],
     args: argparse.Namespace,
     device: torch.device,
     amp_enabled: bool,
     amp_dtype: torch.dtype,
-    rng: np.random.Generator,
     bands: tuple[tuple[float, float], ...],
-    lambda_disc: float,
+    progress: float,
 ) -> tuple[float, list[dict]]:
     student.eval()
     teacher.eval()
-    predictor_main.eval()
-    predictor_rel.eval()
+    student_projector.eval()
+    teacher_projector.eval()
+    student_proto_heads.eval()
+    teacher_proto_heads.eval()
 
     per_dataset = []
     for ds, loader in zip(datasets, eval_loaders):
         metric_sums = {}
         n_batches = 0
         iterator = loader
-        if not args.no_progress:
+        if not args.no_progress and get_is_master():
             iterator = tqdm(loader, desc=f"Setup-gap eval {ds.dataset}", leave=False, dynamic_ncols=True)
         for x, channel_ids in iterator:
-            x = maybe_crop_time(x, args.max_train_length, rng)
-            x, channel_ids, _ = maybe_subsample_channels(
-                x,
-                channel_ids,
-                ratio=args.channel_subsample_ratio,
-                min_channels=args.min_channel_subsample,
-                rng=rng,
-            )
             x = x.to(device, non_blocking=True)
             channel_ids = channel_ids.to(device, non_blocking=True)
             with torch.amp.autocast(device_type=device.type, enabled=amp_enabled, dtype=amp_dtype):
                 _, metrics, _ = compute_step_loss(
                     student,
                     teacher,
-                    predictor_main,
-                    predictor_rel,
+                    student_projector,
+                    teacher_projector,
+                    student_proto_heads,
+                    teacher_proto_heads,
+                    proto_centers,
+                    ds.key,
                     x,
                     channel_ids,
                     args,
                     bands,
-                    lambda_disc=lambda_disc,
-                    disc_queue=None,
+                    progress,
                 )
             accumulate_metrics(metric_sums, metrics)
             n_batches += 1
+        metric_sums, n_batches = reduce_metric_sums(metric_sums, n_batches, device)
         record = average_metrics(metric_sums, n_batches, prefix="eval_")
         record["dataset"] = ds.key
         per_dataset.append(record)
@@ -803,12 +954,14 @@ def save_checkpoint(
     epoch_record: dict,
     best_eval_loss: dict,
 ) -> None:
+    if not get_is_master():
+        return
     epoch = int(epoch_record["epoch"])
     epoch_path = output_dir / f"relation_cgeom_encoder_epoch_{epoch:03d}.pt"
     last_path = output_dir / "relation_cgeom_encoder_last.pt"
     best_path = output_dir / "relation_cgeom_encoder_best.pt"
 
-    torch.save(student.state_dict(), epoch_path)
+    torch.save(unwrap_model(student).state_dict(), epoch_path)
     shutil.copyfile(epoch_path, last_path)
     if epoch_record["eval_loss_total"] < best_eval_loss["value"]:
         best_eval_loss["value"] = float(epoch_record["eval_loss_total"])
@@ -817,7 +970,7 @@ def save_checkpoint(
     else:
         epoch_record["is_best"] = False
 
-    print(
+    print0(
         "Epoch #{epoch}: train_loss={train_loss:.6f} eval_loss={eval_loss:.6f} "
         "train_time={train_time:.2f}s eval_time={eval_time:.2f}s total_time={total_time:.2f}s "
         "best={is_best}".format(
@@ -831,146 +984,234 @@ def save_checkpoint(
         ),
         flush=True,
     )
-    print(f"Saved epoch checkpoint: {epoch_path}", flush=True)
+    print0(f"Saved epoch checkpoint: {epoch_path}", flush=True)
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
     if args.disable_setup_conditioned or args.disable_variable_channel_frontend:
         raise ValueError("Setup-gap pretraining requires the setup-conditioned variable-channel frontend.")
+    device, distributed = setup_runtime(args)
+    args.no_progress = args.no_progress or not get_is_master()
 
-    np.random.seed(args.seed)
-    rng = np.random.default_rng(args.seed)
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
-        torch.backends.cudnn.benchmark = True
+    try:
+        np.random.seed(args.seed)
+        rng = np.random.default_rng(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+            torch.backends.cudnn.benchmark = True
 
-    datasets = load_datasets(args)
-    output_dir = make_output_dir(args, datasets)
-    metrics_path = output_dir / "metrics.jsonl"
-    model_config = build_model_config(args)
-    bands = tuple(model_config["bands"])
-    input_dims = max(ds.train_data.shape[-1] for ds in datasets)
+        datasets = load_datasets(args)
+        output_dir = broadcast_path(make_output_dir(args, datasets) if get_is_master() else None)
+        metrics_path = output_dir / "metrics.jsonl"
+        model_config = build_model_config(args)
+        bands = tuple(model_config["bands"])
+        input_dims = max(ds.train_data.shape[-1] for ds in datasets)
 
-    print(f"Output directory: {output_dir}", flush=True)
-    print(f"Model input_dims placeholder: {input_dims}", flush=True)
-    print(
-        "Dataset schedule: "
-        + ", ".join(f"{ds.label} train={ds.train_data.shape} eval={ds.eval_data.shape}" for ds in datasets),
-        flush=True,
-    )
+        print0(f"Output directory: {output_dir}", flush=True)
+        print0(f"Model input_dims placeholder: {input_dims}", flush=True)
+        print0(
+            "Dataset schedule: "
+            + ", ".join(f"{ds.label} train={ds.train_data.shape} eval={ds.eval_data.shape}" for ds in datasets),
+            flush=True,
+        )
 
-    device = torch.device(args.device)
-    student = TSEncoderThreeBranchHypRelationCGeom(
-        input_dims=input_dims,
-        **model_config,
-    ).to(device)
-    teacher = copy.deepcopy(student).to(device)
-    teacher.requires_grad_(False)
-    teacher.eval()
-    predictor_main = PredictorHead(args.repr_dims * 2).to(device)
-    predictor_rel = PredictorHead(args.repr_dims).to(device)
-    disc_queues = [
-        FeatureQueue(dim=args.repr_dims * 2, size=args.disc_queue_size, device=device)
-        for _ in datasets
-    ]
-
-    optimizer = torch.optim.AdamW(
-        list(student.parameters()) + list(predictor_main.parameters()) + list(predictor_rel.parameters()),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-
-    eval_batch_size = args.eval_batch_size or args.batch_size
-    pin_memory = device.type == "cuda"
-    train_loaders, eval_loaders = make_loaders(datasets, args.batch_size, eval_batch_size, args.num_workers, pin_memory)
-    loader_lengths = np.asarray([len(loader) for loader in train_loaders], dtype=np.int64)
-    epoch_steps = int(args.steps_per_epoch) if args.steps_per_epoch is not None else int(loader_lengths.sum())
-    total_updates = math.ceil(epoch_steps / max(1, args.grad_accum_steps)) * max(1, args.epochs)
-    scheduler = build_scheduler(optimizer, total_steps=total_updates, warmup_ratio=args.warmup_ratio)
-
-    amp_enabled = bool(args.use_amp and device.type == "cuda")
-    amp_dtype = torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16
-    scaler = torch.amp.GradScaler(enabled=amp_enabled and amp_dtype == torch.float16)
-
-    with open(output_dir / "args.json", "w") as f:
-        json.dump(vars(args), f, indent=2, sort_keys=True)
-    with open(output_dir / "model_config.json", "w") as f:
-        json.dump(model_config, f, indent=2, sort_keys=True)
-
-    loss_log = []
-    train_history = []
-    best_eval_loss = {"value": float("inf")}
-    global_update_steps = 0
-
-    for epoch in range(args.epochs):
-        epoch_start = time.time()
-        student.train()
+        student_model = TSEncoderThreeBranchHypRelationCGeom(
+            input_dims=input_dims,
+            **model_config,
+        ).to(device)
+        teacher = copy.deepcopy(student_model).to(device)
+        teacher.requires_grad_(False)
         teacher.eval()
-        predictor_main.train()
-        predictor_rel.train()
-        iterators = [iter(loader) for loader in train_loaders]
-        schedule = build_epoch_schedule(loader_lengths, rng, args.steps_per_epoch, args.sampling_alpha)
 
-        metric_sums = {}
-        dataset_step_counts = {ds.key: 0 for ds in datasets}
-        n_micro_steps = 0
-        n_optimizer_steps = 0
-        optimizer.zero_grad(set_to_none=True)
+        dataset_keys = [ds.key for ds in datasets]
+        student_projector_model = MainProjector(args.repr_dims * 2, args.proto_dim).to(device)
+        teacher_projector = copy.deepcopy(student_projector_model).to(device)
+        teacher_projector.requires_grad_(False)
+        teacher_projector.eval()
 
-        iterator = schedule
-        if not args.no_progress:
-            iterator = tqdm(schedule, desc=f"Setup-gap pretrain epoch {epoch}", leave=True, dynamic_ncols=True)
+        student_proto_heads_model = MultiDatasetPrototypeHeads(dataset_keys, args.proto_dim, args.num_prototypes).to(device)
+        teacher_proto_heads = copy.deepcopy(student_proto_heads_model).to(device)
+        teacher_proto_heads.requires_grad_(False)
+        teacher_proto_heads.eval()
 
-        for dataset_idx in iterator:
-            dataset_idx = int(dataset_idx)
-            x, channel_ids = next_batch(train_loaders, iterators, dataset_idx)
-            x = maybe_crop_time(x, args.max_train_length, rng)
-            x, channel_ids, n_channels_kept = maybe_subsample_channels(
-                x,
-                channel_ids,
-                ratio=args.channel_subsample_ratio,
-                min_channels=args.min_channel_subsample,
-                rng=rng,
+        if distributed:
+            student = DDP(
+                student_model,
+                device_ids=[device.index],
+                output_device=device.index,
+                find_unused_parameters=True,
             )
-            x = x.to(device, non_blocking=True)
-            channel_ids = channel_ids.to(device, non_blocking=True)
-            progress = float(global_update_steps) / float(max(1, total_updates))
-            lambda_disc = get_lambda_disc(progress, args.lambda_disc_max)
+            student_projector = DDP(
+                student_projector_model,
+                device_ids=[device.index],
+                output_device=device.index,
+                find_unused_parameters=False,
+            )
+            student_proto_heads = DDP(
+                student_proto_heads_model,
+                device_ids=[device.index],
+                output_device=device.index,
+                find_unused_parameters=True,
+            )
+        else:
+            student = student_model
+            student_projector = student_projector_model
+            student_proto_heads = student_proto_heads_model
 
-            with torch.amp.autocast(device_type=device.type, enabled=amp_enabled, dtype=amp_dtype):
-                loss, metrics, queue_features = compute_step_loss(
-                    student,
-                    teacher,
-                    predictor_main,
-                    predictor_rel,
+        proto_centers = {
+            dataset_key: torch.zeros(args.num_prototypes, device=device, dtype=torch.float32)
+            for dataset_key in dataset_keys
+        }
+
+        optimizer = torch.optim.AdamW(
+            list(student.parameters()) + list(student_projector.parameters()) + list(student_proto_heads.parameters()),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+        )
+
+        eval_batch_size = args.eval_batch_size or args.batch_size
+        pin_memory = device.type == "cuda"
+        train_loaders, eval_loaders, train_samplers = make_loaders(
+            datasets,
+            args.batch_size,
+            eval_batch_size,
+            args.num_workers,
+            pin_memory,
+            distributed=distributed,
+        )
+        loader_lengths = np.asarray([len(loader) for loader in train_loaders], dtype=np.int64)
+        epoch_steps = int(args.steps_per_epoch) if args.steps_per_epoch is not None else int(loader_lengths.sum())
+        total_updates = math.ceil(epoch_steps / max(1, args.grad_accum_steps)) * max(1, args.epochs)
+        scheduler = build_scheduler(optimizer, total_steps=total_updates, warmup_ratio=args.warmup_ratio)
+
+        amp_enabled = bool(args.use_amp and device.type == "cuda")
+        amp_dtype = torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16
+        scaler = torch.amp.GradScaler(enabled=amp_enabled and amp_dtype == torch.float16)
+
+        if get_is_master():
+            with open(output_dir / "args.json", "w") as f:
+                json.dump(vars(args), f, indent=2, sort_keys=True)
+            with open(output_dir / "model_config.json", "w") as f:
+                json.dump(model_config, f, indent=2, sort_keys=True)
+
+        loss_log = []
+        train_history = []
+        best_eval_loss = {"value": float("inf")}
+        global_update_steps = 0
+
+        for epoch in range(args.epochs):
+            epoch_start = time.time()
+            student.train()
+            teacher.eval()
+            student_projector.train()
+            teacher_projector.eval()
+            student_proto_heads.train()
+            teacher_proto_heads.eval()
+            for sampler in train_samplers:
+                if sampler is not None:
+                    sampler.set_epoch(epoch)
+            iterators = [iter(loader) for loader in train_loaders]
+            schedule = build_epoch_schedule(loader_lengths, rng, args.steps_per_epoch, args.sampling_alpha)
+
+            metric_sums = {}
+            dataset_step_counts = {ds.key: 0 for ds in datasets}
+            n_micro_steps = 0
+            n_optimizer_steps = 0
+            optimizer.zero_grad(set_to_none=True)
+
+            iterator = schedule
+            if not args.no_progress:
+                iterator = tqdm(schedule, desc=f"Setup-gap pretrain epoch {epoch}", leave=True, dynamic_ncols=True)
+
+            for dataset_idx in iterator:
+                dataset_idx = int(dataset_idx)
+                x, channel_ids = next_batch(train_loaders, iterators, dataset_idx)
+                x = maybe_crop_time(x, args.max_train_length, rng)
+                x, channel_ids, n_channels_kept = maybe_subsample_channels(
                     x,
                     channel_ids,
-                    args,
-                    bands,
-                    lambda_disc=lambda_disc,
-                    disc_queue=disc_queues[dataset_idx],
+                    ratio=args.channel_subsample_ratio,
+                    min_channels=args.min_channel_subsample,
+                    rng=rng,
                 )
-                loss_for_backward = loss / max(1, args.grad_accum_steps)
+                x = x.to(device, non_blocking=True)
+                channel_ids = channel_ids.to(device, non_blocking=True)
+                progress = float(global_update_steps) / float(max(1, total_updates))
 
-            if scaler.is_enabled():
-                scaler.scale(loss_for_backward).backward()
-            else:
-                loss_for_backward.backward()
+                with torch.amp.autocast(device_type=device.type, enabled=amp_enabled, dtype=amp_dtype):
+                    loss, metrics, teacher_logits = compute_step_loss(
+                        student,
+                        teacher,
+                        student_projector,
+                        teacher_projector,
+                        student_proto_heads,
+                        teacher_proto_heads,
+                        proto_centers,
+                        datasets[dataset_idx].key,
+                        x,
+                        channel_ids,
+                        args,
+                        bands,
+                        progress,
+                    )
+                    loss_for_backward = loss / max(1, args.grad_accum_steps)
 
-            n_micro_steps += 1
-            dataset_step_counts[datasets[dataset_idx].key] += 1
-            accumulate_metrics(metric_sums, metrics)
-            disc_queues[dataset_idx].enqueue(queue_features)
+                if scaler.is_enabled():
+                    scaler.scale(loss_for_backward).backward()
+                else:
+                    loss_for_backward.backward()
 
-            should_step = n_micro_steps % max(1, args.grad_accum_steps) == 0
-            if should_step:
+                n_micro_steps += 1
+                dataset_step_counts[datasets[dataset_idx].key] += 1
+                accumulate_metrics(metric_sums, metrics)
+                update_proto_center(
+                    proto_centers[datasets[dataset_idx].key],
+                    teacher_logits,
+                    momentum=args.proto_center_momentum,
+                )
+
+                should_step = n_micro_steps % max(1, args.grad_accum_steps) == 0
+                if should_step:
+                    optimizer_update(
+                        student,
+                        teacher,
+                        student_projector,
+                        teacher_projector,
+                        student_proto_heads,
+                        teacher_proto_heads,
+                        optimizer,
+                        scheduler,
+                        scaler,
+                        args,
+                    )
+                    global_update_steps += 1
+                    n_optimizer_steps += 1
+
+                if not args.no_progress:
+                    iterator.set_postfix(
+                        {
+                            "dataset": datasets[dataset_idx].dataset,
+                            "chs": n_channels_kept,
+                            "loss": f"{to_float(metrics['loss_total']):.5f}",
+                            "proto": f"{to_float(metrics['loss_proto_main']):.5f}",
+                            "bal": f"{to_float(metrics['loss_proto_balance']):.4f}",
+                            "rel": f"{to_float(metrics['loss_rel_cons']):.5f}",
+                            "ent": f"{to_float(metrics['teacher_entropy']):.3f}",
+                            "active": f"{to_float(metrics['active_proto_count']):.1f}",
+                            "ppl": f"{to_float(metrics['proto_usage_perplexity']):.1f}",
+                        }
+                    )
+
+            if n_micro_steps % max(1, args.grad_accum_steps) != 0:
                 optimizer_update(
                     student,
                     teacher,
-                    predictor_main,
-                    predictor_rel,
+                    student_projector,
+                    teacher_projector,
+                    student_proto_heads,
+                    teacher_proto_heads,
                     optimizer,
                     scheduler,
                     scaler,
@@ -979,92 +1220,78 @@ def main() -> None:
                 global_update_steps += 1
                 n_optimizer_steps += 1
 
-            if not args.no_progress:
-                iterator.set_postfix(
-                    {
-                        "dataset": datasets[dataset_idx].dataset,
-                        "chs": n_channels_kept,
-                        "loss": f"{to_float(metrics['loss_total']):.5f}",
-                        "inv": f"{to_float(metrics['loss_inv']):.5f}",
-                        "disc": f"{to_float(metrics['loss_disc']):.5f}",
-                        "ld": f"{to_float(metrics['lambda_disc']):.3f}",
-                        "dacc": f"{to_float(metrics['disc_acc_in_batch']):.3f}",
-                    }
-                )
-
-        if n_micro_steps % max(1, args.grad_accum_steps) != 0:
-            optimizer_update(
+            train_time_sec = time.time() - epoch_start
+            eval_start = time.time()
+            eval_loss, per_dataset_eval = evaluate_loss(
                 student,
                 teacher,
-                predictor_main,
-                predictor_rel,
-                optimizer,
-                scheduler,
-                scaler,
+                student_projector,
+                teacher_projector,
+                student_proto_heads,
+                teacher_proto_heads,
+                proto_centers,
+                eval_loaders,
+                datasets,
                 args,
+                device,
+                amp_enabled,
+                amp_dtype,
+                bands,
+                progress=float(global_update_steps) / float(max(1, total_updates)),
             )
-            global_update_steps += 1
-            n_optimizer_steps += 1
+            eval_time_sec = time.time() - eval_start
 
-        train_time_sec = time.time() - epoch_start
-        eval_start = time.time()
-        eval_loss, per_dataset_eval = evaluate_loss(
-            student,
-            teacher,
-            predictor_main,
-            predictor_rel,
-            eval_loaders,
-            datasets,
-            args,
-            device,
-            amp_enabled,
-            amp_dtype,
-            rng,
-            bands,
-            lambda_disc=get_lambda_disc(float(global_update_steps) / float(max(1, total_updates)), args.lambda_disc_max),
-        )
-        eval_time_sec = time.time() - eval_start
+            metric_sums, n_micro_steps = reduce_metric_sums(metric_sums, n_micro_steps, device)
+            dataset_step_counts = reduce_count_dict(dataset_step_counts, device)
 
-        epoch_record = {
-            "epoch": int(epoch),
-            "epoch_time_sec": float(train_time_sec),
-            "eval_time_sec": float(eval_time_sec),
-            "total_epoch_time_sec": float(train_time_sec + eval_time_sec),
-            "eval_loss_total": float(eval_loss),
-            "optimizer_steps": int(n_optimizer_steps),
-            "global_update_steps": int(global_update_steps),
-            "grad_accum_steps": int(args.grad_accum_steps),
-            "lr": float(scheduler.get_last_lr()[0]),
-            "channel_subsample_ratio": float(args.channel_subsample_ratio),
-            "min_channel_subsample": int(args.min_channel_subsample),
-        }
-        epoch_record.update(average_metrics(metric_sums, n_micro_steps))
-        for key, value in dataset_step_counts.items():
-            epoch_record[f"train_steps_{key}"] = int(value)
-        for record in per_dataset_eval:
-            ds_key = record.pop("dataset")
-            for key, value in record.items():
-                epoch_record[f"{ds_key}_{key}"] = float(value)
+            epoch_record = {
+                "epoch": int(epoch),
+                "epoch_time_sec": float(train_time_sec),
+                "eval_time_sec": float(eval_time_sec),
+                "total_epoch_time_sec": float(train_time_sec + eval_time_sec),
+                "eval_loss_total": float(eval_loss),
+                "optimizer_steps": int(n_optimizer_steps),
+                "global_update_steps": int(global_update_steps),
+                "grad_accum_steps": int(args.grad_accum_steps),
+                "lr": float(scheduler.get_last_lr()[0]),
+                "channel_subsample_ratio": float(args.channel_subsample_ratio),
+                "min_channel_subsample": int(args.min_channel_subsample),
+                "world_size": int(get_world_size()),
+                "per_device_batch_size": int(args.batch_size),
+                "global_batch_size": int(args.batch_size * max(1, args.grad_accum_steps) * get_world_size()),
+                "distributed": bool(distributed),
+            }
+            epoch_record.update(average_metrics(metric_sums, n_micro_steps))
+            for key, value in dataset_step_counts.items():
+                epoch_record[f"train_steps_{key}"] = int(value)
+            for record in per_dataset_eval:
+                ds_key = record.pop("dataset")
+                for key, value in record.items():
+                    epoch_record[f"{ds_key}_{key}"] = float(value)
 
-        save_checkpoint(student, output_dir, epoch_record, best_eval_loss)
-        with open(metrics_path, "a") as f:
-            f.write(json.dumps(epoch_record, sort_keys=True) + "\n")
+            save_checkpoint(student, output_dir, epoch_record, best_eval_loss)
+            if get_is_master():
+                with open(metrics_path, "a") as f:
+                    f.write(json.dumps(epoch_record, sort_keys=True) + "\n")
+                train_history.append(epoch_record)
+                loss_log.append(epoch_record["loss_total"])
 
-        train_history.append(epoch_record)
-        loss_log.append(epoch_record["loss_total"])
+        if get_is_master():
+            last_path = output_dir / "relation_cgeom_encoder_last.pt"
+            best_path = output_dir / "relation_cgeom_encoder_best.pt"
+            if last_path.exists() and not best_path.exists():
+                shutil.copyfile(last_path, best_path)
 
-    last_path = output_dir / "relation_cgeom_encoder_last.pt"
-    best_path = output_dir / "relation_cgeom_encoder_best.pt"
-    if last_path.exists() and not best_path.exists():
-        shutil.copyfile(last_path, best_path)
+            with open(output_dir / "train_history.pkl", "wb") as f:
+                pickle.dump(train_history, f)
+            with open(output_dir / "loss_log.pkl", "wb") as f:
+                pickle.dump(loss_log, f)
 
-    with open(output_dir / "train_history.pkl", "wb") as f:
-        pickle.dump(train_history, f)
-    with open(output_dir / "loss_log.pkl", "wb") as f:
-        pickle.dump(loss_log, f)
-
-    print(f"Saved last encoder checkpoint: {last_path}", flush=True)
-    print(f"Saved best encoder checkpoint: {best_path}", flush=True)
+            print0(f"Saved last encoder checkpoint: {last_path}", flush=True)
+            print0(f"Saved best encoder checkpoint: {best_path}", flush=True)
+    finally:
+        if is_distributed():
+            clean_torch_distributed(get_local_rank())
 
 
 if __name__ == "__main__":

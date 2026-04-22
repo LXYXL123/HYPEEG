@@ -4,6 +4,12 @@ set -euo pipefail
 cd /root/EEG-FM-Bench
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+
+declare -a DDP_ARGS=()
+if (( NPROC_PER_NODE > 1 )); then
+  DDP_ARGS+=(multi_gpu=true "nproc_per_node=${NPROC_PER_NODE}")
+fi
 
 if [[ -z "${EEGPT_CKPT:-}" ]]; then
   echo "Please set EEGPT_CKPT to the pretrained EEGPT checkpoint path."
@@ -19,6 +25,7 @@ fi
 
 echo "Using EEGPT pretrained checkpoint: $EEGPT_CKPT"
 echo "Full fine-tuning: training.freeze_encoder=false"
+echo "nproc_per_node: $NPROC_PER_NODE"
 
 python3 baseline_main.py \
   conf_file=baseline/eegpt/eegpt_bcic2a.yaml \
@@ -27,4 +34,5 @@ python3 baseline_main.py \
   model.pretrained_path="$EEGPT_CKPT" \
   logging.run_group=eegpt_bcic2a_pretrained_fullfinetune \
   logging.experiment_name=eegpt_bcic2a_pretrained_fullfinetune \
-  logging.tags='[eegpt,bcic_2a,pretrained,fullfinetune]'
+  logging.tags='[eegpt,bcic_2a,pretrained,fullfinetune]' \
+  "${DDP_ARGS[@]}"

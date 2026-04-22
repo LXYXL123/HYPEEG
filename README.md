@@ -228,6 +228,18 @@ python preproc.py conf_file=preproc/preproc_example.yaml
 # Fine-Tuning (examples for different models)
 python baseline_main.py conf_file=baseline/eegpt/eegpt_unified.yaml model_type=eegpt
 
+# Multi-GPU (single node) using all visible GPUs
+python baseline_main.py \
+  conf_file=baseline/eegpt/eegpt_unified.yaml \
+  model_type=eegpt \
+  multi_gpu=true
+
+# Multi-GPU (single node) using a fixed number of GPUs, e.g. 8x A100
+python baseline_main.py \
+  conf_file=baseline/eegpt/eegpt_unified.yaml \
+  model_type=eegpt \
+  nproc_per_node=8
+
 # List model types supported by the unified entrypoint
 python baseline_main.py list-models
 ```

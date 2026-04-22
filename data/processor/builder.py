@@ -21,7 +21,14 @@ from numpy import ndarray
 from omegaconf import OmegaConf
 from pandas import DataFrame
 from tqdm import tqdm
-from datasets.data_files import DataFilesDict, DataFilesPatternsDict
+from datasets.data_files import DataFilesDict
+try:
+    from datasets.data_files import DataFilesPatternsDict
+except ImportError:
+    # Newer/older datasets releases may not expose DataFilesPatternsDict.
+    # It is only used as a type annotation here, so falling back keeps runtime
+    # compatibility without changing dataset loading behavior.
+    DataFilesPatternsDict = DataFilesDict
 from datasets import BuilderConfig, utils, DownloadManager, StreamingDownloadManager, SplitGenerator
 
 from common.log import setup_log

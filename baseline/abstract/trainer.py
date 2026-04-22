@@ -138,7 +138,13 @@ class AbstractTrainer(ABC):
         os.environ["MASTER_PORT"] = str(master_port)
         os.environ["LOCAL_RANK"] = str(local_rank)
 
-        assert 0 <= local_rank < 8
+        if not torch.cuda.is_available():
+            raise RuntimeError("Distributed baseline training requires CUDA GPUs.")
+
+        gpu_count = torch.cuda.device_count()
+        if not 0 <= local_rank < gpu_count:
+            raise ValueError(f"Invalid local_rank={local_rank}. Visible GPU count: {gpu_count}")
+
         torch.cuda.set_device(local_rank)
 
         torch.distributed.init_process_group(

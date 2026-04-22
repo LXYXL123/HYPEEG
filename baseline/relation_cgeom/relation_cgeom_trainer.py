@@ -12,6 +12,7 @@ from torch import nn
 from baseline.abstract.classifier import MultiHeadClassifier
 from baseline.abstract.trainer import AbstractTrainer
 from baseline.relation_cgeom.encoder_three_branch_hyp_relation_cgeom import TSEncoderThreeBranchHypRelationCGeom
+from baseline.relation_cgeom.heegnet_lorentz import MultiHeadLorentzClassifier
 from baseline.relation_cgeom.relation_cgeom_adapter import RelationCGeomDataLoaderFactory, RelationCGeomDatasetAdapter
 from baseline.relation_cgeom.relation_cgeom_config import RelationCGeomConfig, RelationCGeomModelArgs
 from data.processor.wrapper import get_dataset_montage
@@ -26,10 +27,11 @@ class RelationCGeomUnifiedModel(nn.Module):
     def __init__(
         self,
         encoder: TSEncoderThreeBranchHypRelationCGeom,
-        classifier: MultiHeadClassifier,
+        classifier: nn.Module,
         sampling_rate: float = 256.0,
         downstream_mask: Optional[str] = "all_true",
         grad_cam: bool = False,
+        use_lorentz_classifier: bool = False,
     ):
         super().__init__()
         self.encoder = encoder
@@ -37,6 +39,7 @@ class RelationCGeomUnifiedModel(nn.Module):
         self.sampling_rate = float(sampling_rate)
         self.downstream_mask = downstream_mask
         self.grad_cam = grad_cam
+        self.use_lorentz_classifier = bool(use_lorentz_classifier)
         self.grad_cam_activation = None
 
     def _build_setup_context(self, batch, x):
@@ -62,6 +65,13 @@ class RelationCGeomUnifiedModel(nn.Module):
 
         # relation-CGeom encoder consumes [B, T, C].
         x = x.transpose(1, 2)
+        if self.use_lorentz_classifier:
+            out = self.encoder(x, mask=self.downstream_mask, setup=setup, return_aux=True)
+            if self.grad_cam:
+                self.grad_cam_activation = out["main_repr"].unsqueeze(2)
+            logits = self.classifier(out["main_global"], montage)
+            return logits
+
         features = self.encoder(x, mask=self.downstream_mask, setup=setup)  # [B, T, 2 * output_dims]
         features = features.unsqueeze(2)  # [B, T, 1, D]
 
@@ -126,7 +136,9 @@ class RelationCGeomTrainer(AbstractTrainer):
         logger.info("Setting up relation-CGeom model architecture...")
         model_cfg: RelationCGeomModelArgs = self.cfg.model
 
-        input_dims = self._resolve_input_dims(allow_variable=model_cfg.use_variable_channel_frontend)
+        input_dims = self._resolve_input_dims(
+            allow_variable=model_cfg.use_variable_channel_frontend or model_cfg.architecture == "spectral_lite"
+        )
         self.encoder = TSEncoderThreeBranchHypRelationCGeom(
             input_dims=input_dims,
             output_dims=model_cfg.output_dims,
@@ -160,6 +172,15 @@ class RelationCGeomTrainer(AbstractTrainer):
             use_variable_channel_frontend=model_cfg.use_variable_channel_frontend,
             per_channel_stem_depth=model_cfg.per_channel_stem_depth,
             channel_attn_heads=model_cfg.channel_attn_heads,
+            architecture=model_cfg.architecture,
+            spectral_dims=model_cfg.spectral_dims,
+            spectral_win_len=model_cfg.spectral_win_len,
+            spectral_stride=model_cfg.spectral_stride,
+            spectral_freq_low=model_cfg.spectral_freq_low,
+            spectral_freq_high=model_cfg.spectral_freq_high,
+            spectral_mixer_depth=model_cfg.spectral_mixer_depth,
+            use_heegnet_lorentz=model_cfg.use_heegnet_lorentz,
+            heegnet_lorentz_dim=model_cfg.heegnet_lorentz_dim,
             mask_mode=model_cfg.mask_mode,
         )
 
@@ -172,13 +193,23 @@ class RelationCGeomTrainer(AbstractTrainer):
             for montage_key, (n_timepoints, _) in info["shape_info"].items():
                 ds_shape_out_info[montage_key] = (n_timepoints, 1, embed_dim)
 
-        self.classifier = MultiHeadClassifier(
-            embed_dim=embed_dim,
-            head_configs=head_configs,
-            head_cfg=head_cfg,
-            ds_shape_info=ds_shape_out_info,
-            t_sne=model_cfg.t_sne,
-        )
+        if model_cfg.use_heegnet_lorentz_classifier:
+            self.classifier = MultiHeadLorentzClassifier(
+                input_dim=embed_dim,
+                lorentz_dim=model_cfg.heegnet_lorentz_dim,
+                head_configs=head_configs,
+                curvature=model_cfg.hyperbolic_curvature,
+                learnable_curvature=model_cfg.learnable_curvature,
+                t_sne=model_cfg.t_sne,
+            )
+        else:
+            self.classifier = MultiHeadClassifier(
+                embed_dim=embed_dim,
+                head_configs=head_configs,
+                head_cfg=head_cfg,
+                ds_shape_info=ds_shape_out_info,
+                t_sne=model_cfg.t_sne,
+            )
         logger.info(f"Created multi-head classifier with heads: {list(head_configs.keys())}")
 
         self.load_checkpoint(model_cfg.pretrained_path)
@@ -190,6 +221,7 @@ class RelationCGeomTrainer(AbstractTrainer):
             sampling_rate=float(self.cfg.fs),
             downstream_mask=model_cfg.downstream_mask,
             grad_cam=model_cfg.grad_cam,
+            use_lorentz_classifier=model_cfg.use_heegnet_lorentz_classifier,
         )
 
         model = self.apply_lora(model)

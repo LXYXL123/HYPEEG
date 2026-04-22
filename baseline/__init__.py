@@ -27,9 +27,18 @@ from baseline.biot.biot_config import BiotConfig
 from baseline.biot.biot_trainer import BiotTrainer
 from baseline.mantis import MantisConfig, MantisDataLoaderFactory, MantisTrainer
 from baseline.moment import MomentConfig, MomentDataLoaderFactory, MomentTrainer
-from baseline.reve.reve_adapter import ReveDataLoaderFactory
-from baseline.reve.reve_config import ReveConfig
-from baseline.reve.reve_trainer import ReveTrainer
+try:
+    from baseline.reve.reve_adapter import ReveDataLoaderFactory
+    from baseline.reve.reve_config import ReveConfig
+    from baseline.reve.reve_trainer import ReveTrainer
+except ModuleNotFoundError as exc:
+    # REVE depends on optional packages such as optimi. Keep other baselines
+    # runnable when those optional dependencies are not installed.
+    if exc.name != "optimi":
+        raise
+    ReveDataLoaderFactory = None
+    ReveConfig = None
+    ReveTrainer = None
 
 ModelRegistry.register_model(
     model_type='eegpt',
@@ -66,12 +75,13 @@ ModelRegistry.register_model(
     trainer_class=CBraModTrainer
 )
 
-ModelRegistry.register_model(
-    model_type='reve',
-    config_class=ReveConfig,
-    adapter_class=ReveDataLoaderFactory,
-    trainer_class=ReveTrainer
-)
+if ReveConfig is not None and ReveTrainer is not None:
+    ModelRegistry.register_model(
+        model_type='reve',
+        config_class=ReveConfig,
+        adapter_class=ReveDataLoaderFactory,
+        trainer_class=ReveTrainer
+    )
 
 ModelRegistry.register_model(
     model_type='csbrain',

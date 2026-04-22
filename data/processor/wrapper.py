@@ -1,4 +1,6 @@
 import logging
+import re
+from dataclasses import dataclass
 from typing import Type, Optional
 
 import torch
@@ -50,6 +52,54 @@ from data.processor.builder import EEGDatasetBuilder, EEGConfig
 log = logging.getLogger()
 
 
+def _patch_datasets_local_filesystem_detection() -> None:
+    """Keep older datasets compatible with newer fsspec LocalFileSystem.
+
+    Some datasets releases check ``fs.protocol != "file"`` to decide whether a
+    cache is remote. Newer fsspec may expose LocalFileSystem.protocol as a tuple
+    like ("file", "local"), which makes datasets wrongly reject local caches.
+    """
+    try:
+        import datasets.builder as datasets_builder
+        import datasets.filesystems as datasets_filesystems
+    except Exception:
+        return
+
+    def is_remote_filesystem(fs) -> bool:
+        protocol = getattr(fs, 'protocol', None)
+        if isinstance(protocol, (tuple, list, set)):
+            return 'file' not in protocol and 'local' not in protocol
+        return protocol not in ('file', 'local', None)
+
+    datasets_filesystems.is_remote_filesystem = is_remote_filesystem
+    datasets_builder.is_remote_filesystem = is_remote_filesystem
+
+
+_patch_datasets_local_filesystem_detection()
+
+
+@dataclass(frozen=True)
+class RuntimeDatasetConfig:
+    base_config: str
+    split_mode: Optional[str] = None
+    fold_index: Optional[int] = None
+
+
+BCIC2A_LOSO_SPLITS = [
+    {"test": [1], "val": [2, 3], "train": [4, 5, 6, 7, 8, 9]},
+    {"test": [2], "val": [3, 4], "train": [1, 5, 6, 7, 8, 9]},
+    {"test": [3], "val": [4, 5], "train": [1, 2, 6, 7, 8, 9]},
+    {"test": [4], "val": [5, 6], "train": [1, 2, 3, 7, 8, 9]},
+    {"test": [5], "val": [6, 7], "train": [1, 2, 3, 4, 8, 9]},
+    {"test": [6], "val": [7, 8], "train": [1, 2, 3, 4, 5, 9]},
+    {"test": [7], "val": [8, 9], "train": [1, 2, 3, 4, 5, 6]},
+    {"test": [8], "val": [9, 1], "train": [2, 3, 4, 5, 6, 7]},
+    {"test": [9], "val": [1, 2], "train": [3, 4, 5, 6, 7, 8]},
+]
+
+BCIC2A_LOSO_CONFIG_PATTERN = re.compile(r"^(?P<base>finetune)_loso(?:_fold)?(?P<fold>\d+)$")
+
+
 DATASET_SELECTOR: dict[str, Type[EEGDatasetBuilder]] = {
     'tuab': TuabBuilder,
     'tuar': TuarBuilder,
@@ -90,8 +140,80 @@ DATASET_SELECTOR: dict[str, Type[EEGDatasetBuilder]] = {
     'open_miir': OpenMiirBuilder,
 }
 
+
+def resolve_runtime_dataset_config(dataset_name: str, config_name: str) -> RuntimeDatasetConfig:
+    if dataset_name == 'bcic_2a':
+        match = BCIC2A_LOSO_CONFIG_PATTERN.fullmatch(config_name)
+        if match is not None:
+            fold_number = int(match.group('fold'))
+            if fold_number < 1 or fold_number > len(BCIC2A_LOSO_SPLITS):
+                raise ValueError(
+                    f'Invalid BCIC-2a LOSO fold {fold_number}. '
+                    f'Expected 1..{len(BCIC2A_LOSO_SPLITS)}.'
+                )
+            return RuntimeDatasetConfig(
+                base_config=match.group('base'),
+                split_mode='loso',
+                fold_index=fold_number - 1,
+            )
+    return RuntimeDatasetConfig(base_config=config_name)
+
+
+def _map_runtime_split_name(split: datasets.NamedSplit) -> str:
+    if split == datasets.Split.TRAIN:
+        return 'train'
+    if split == datasets.Split.VALIDATION:
+        return 'val'
+    if split == datasets.Split.TEST:
+        return 'test'
+    raise ValueError(f'Unsupported split for runtime dataset routing: {split}')
+
+
+def _load_bcic2a_loso_dataset(
+        builder: EEGDatasetBuilder,
+        split: datasets.NamedSplit,
+        fold_index: int,
+) -> Dataset:
+    target_split = _map_runtime_split_name(split)
+    target_subjects = {str(subj) for subj in BCIC2A_LOSO_SPLITS[fold_index][target_split]}
+
+    source_splits = [datasets.Split.TRAIN, datasets.Split.VALIDATION, datasets.Split.TEST]
+    full_dataset = concatenate_datasets([builder.as_dataset(split=source_split) for source_split in source_splits])
+    full_count = len(full_dataset)
+    filtered = full_dataset.filter(
+        lambda subject: str(subject) in target_subjects,
+        input_columns=['subject'],
+        desc=f'Filtering bcic_2a LOSO fold {fold_index + 1} {target_split}',
+    )
+    log.info(
+        f'Loading bcic_2a LOSO fold {fold_index + 1}: '
+        f'split={target_split}, subjects={sorted(int(s) for s in target_subjects)}, '
+        f'samples={len(filtered)}/{full_count}'
+    )
+    return filtered
+
+
+def load_runtime_eeg_dataset(
+        dataset_name: str,
+        builder_config: str,
+        split: datasets.NamedSplit,
+        fs: int,
+) -> Dataset:
+    runtime_cfg = resolve_runtime_dataset_config(dataset_name, builder_config)
+    builder_cls = DATASET_SELECTOR[dataset_name]
+    builder = builder_cls(config_name=runtime_cfg.base_config, fs=fs)
+
+    if runtime_cfg.split_mode == 'loso':
+        if dataset_name != 'bcic_2a' or runtime_cfg.fold_index is None:
+            raise ValueError(f'Unsupported runtime split mode for {dataset_name}-{builder_config}')
+        return _load_bcic2a_loso_dataset(builder, split=split, fold_index=runtime_cfg.fold_index)
+
+    # noinspection PyTypeChecker
+    return builder.as_dataset(split=split)
+
 def get_dataset_patch_len(dataset_name: str, config_name: str) -> int:
-    config: EEGConfig = DATASET_SELECTOR[dataset_name].builder_configs.get(config_name)
+    runtime_cfg = resolve_runtime_dataset_config(dataset_name, config_name)
+    config: EEGConfig = DATASET_SELECTOR[dataset_name].builder_configs.get(runtime_cfg.base_config)
     return config.wnd_div_sec
 
 
@@ -107,8 +229,9 @@ def get_dataset_shape_info(dataset_name: str, config_name: str, fs: int) -> dict
     Returns:
         Dict mapping montage_key -> (n_timepoints, n_channels)
     """
+    runtime_cfg = resolve_runtime_dataset_config(dataset_name, config_name)
     builder_cls = DATASET_SELECTOR[dataset_name]
-    builder: EEGDatasetBuilder = builder_cls(config_name=config_name)
+    builder: EEGDatasetBuilder = builder_cls(config_name=runtime_cfg.base_config)
 
     config: EEGConfig = builder.config
     n_timepoints = int(config.wnd_div_sec * fs)
@@ -124,17 +247,20 @@ def get_dataset_shape_info(dataset_name: str, config_name: str, fs: int) -> dict
 
 
 def get_dataset_n_class(dataset_name: str, config_name: str) -> int:
-    config: EEGConfig = DATASET_SELECTOR[dataset_name].builder_configs.get(config_name)
+    runtime_cfg = resolve_runtime_dataset_config(dataset_name, config_name)
+    config: EEGConfig = DATASET_SELECTOR[dataset_name].builder_configs.get(runtime_cfg.base_config)
     return len(config.category)
 
 def get_dataset_category(dataset_name: str, config_name: str) -> list[str]:
-    config: EEGConfig = DATASET_SELECTOR[dataset_name].builder_configs.get(config_name)
+    runtime_cfg = resolve_runtime_dataset_config(dataset_name, config_name)
+    config: EEGConfig = DATASET_SELECTOR[dataset_name].builder_configs.get(runtime_cfg.base_config)
     return config.category
 
 def get_dataset_montage(dataset_name: str, config_name: str) -> dict[str, list[str]]:
     # Note: This function needs builder instance to call standardize_chs_names()
+    runtime_cfg = resolve_runtime_dataset_config(dataset_name, config_name)
     builder_cls = DATASET_SELECTOR[dataset_name]
-    builder: EEGDatasetBuilder = builder_cls(config_name=config_name)
+    builder: EEGDatasetBuilder = builder_cls(config_name=runtime_cfg.base_config)
     montage_names = builder.config.montage.keys()
 
     montages: dict[str, list[str]] = dict()
@@ -173,11 +299,16 @@ def load_concat_eeg_datasets(
 
     for ds_name, ds_config in zip(dataset_names, builder_configs):
         try:
+            runtime_cfg = resolve_runtime_dataset_config(ds_name, ds_config)
             builder_cls = DATASET_SELECTOR[ds_name]
-            builder = builder_cls(config_name=ds_config, fs=fs)
+            builder = builder_cls(config_name=runtime_cfg.base_config, fs=fs)
             log.info(f'Loading {ds_name}-{ds_config} at fs={fs}Hz from {builder.cache_dir}')
-            # noinspection PyTypeChecker
-            dataset: Dataset = builder.as_dataset(split=split)
+            dataset = load_runtime_eeg_dataset(
+                dataset_name=ds_name,
+                builder_config=ds_config,
+                split=split,
+                fs=fs,
+            )
             if add_ds_name:
                 dataset = dataset.add_column('ds_name', [ds_name for _ in range(len(dataset))])
 
@@ -228,4 +359,3 @@ if __name__ == '__main__':
 
     for batch in loader:
         pass
-

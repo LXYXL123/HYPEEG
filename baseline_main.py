@@ -14,12 +14,110 @@ The model_type parameter specifies which model architecture to use.
 """
 
 import sys
+import os
+import subprocess
 
 from omegaconf import OmegaConf
+import torch
 
 from baseline.abstract.factory import ModelRegistry
 from common.path import get_conf_file_path
 from common.utils import setup_yaml
+
+
+def _parse_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _get_cli_int(cli_args, key: str, default: int) -> int:
+    value = cli_args.get(key, default)
+    if value is None:
+        return default
+    return int(value)
+
+
+def _strip_launcher_args(raw_args: list[str]) -> list[str]:
+    launcher_keys = {
+        "multi_gpu",
+        "nproc_per_node",
+        "nnodes",
+        "node_rank",
+        "master_addr",
+        "master_port",
+    }
+    keep_args = []
+    for arg in raw_args:
+        if "=" not in arg:
+            keep_args.append(arg)
+            continue
+        key = arg.split("=", 1)[0]
+        if key in launcher_keys:
+            continue
+        keep_args.append(arg)
+    return keep_args
+
+
+def _maybe_launch_torchrun(cli_args, raw_args: list[str]) -> None:
+    # Already in torchrun child process.
+    if os.environ.get("LOCAL_RANK") is not None:
+        return
+
+    multi_gpu = _parse_bool(cli_args.get("multi_gpu", os.environ.get("MULTI_GPU", "false")))
+    requested_nproc = int(cli_args.get("nproc_per_node", os.environ.get("NPROC_PER_NODE", 0) or 0))
+
+    if requested_nproc <= 1 and not multi_gpu:
+        return
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("Requested multi-GPU run but CUDA is not available.")
+
+    gpu_count = torch.cuda.device_count()
+    if gpu_count < 2:
+        raise RuntimeError(f"Requested multi-GPU run but only detected {gpu_count} GPU.")
+
+    if requested_nproc <= 1:
+        requested_nproc = gpu_count
+
+    if requested_nproc > gpu_count:
+        raise ValueError(
+            f"Requested nproc_per_node={requested_nproc}, but only {gpu_count} GPU(s) are visible."
+        )
+
+    nnodes = _get_cli_int(cli_args, "nnodes", int(os.environ.get("NNODES", 1)))
+    node_rank = _get_cli_int(cli_args, "node_rank", int(os.environ.get("NODE_RANK", 0)))
+    master_addr = str(cli_args.get("master_addr", os.environ.get("MASTER_ADDR", "127.0.0.1")))
+    master_port = _get_cli_int(cli_args, "master_port", int(os.environ.get("MASTER_PORT", 29500)))
+
+    launch_cmd = [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--nproc_per_node",
+        str(requested_nproc),
+        "--nnodes",
+        str(nnodes),
+        "--node_rank",
+        str(node_rank),
+        "--master_addr",
+        master_addr,
+        "--master_port",
+        str(master_port),
+        sys.argv[0],
+        *_strip_launcher_args(raw_args),
+    ]
+
+    print(
+        f"[baseline_main] Launching multi-GPU run via torchrun: "
+        f"nproc_per_node={requested_nproc}, nnodes={nnodes}, node_rank={node_rank}"
+    )
+    completed = subprocess.run(launch_cmd, check=False)
+    sys.exit(completed.returncode)
 
 
 def main():
@@ -27,7 +125,10 @@ def main():
     setup_yaml()
     
     # Parse CLI arguments
-    cli_args = OmegaConf.from_cli()
+    raw_args = sys.argv[1:]
+    cli_args = OmegaConf.from_cli(raw_args)
+
+    _maybe_launch_torchrun(cli_args, raw_args)
 
     if 'conf_file' not in cli_args:
         raise ValueError("Please provide a config file: conf_file=path/to/config.yaml")

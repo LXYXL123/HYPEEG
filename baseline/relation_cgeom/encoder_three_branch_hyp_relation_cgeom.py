@@ -18,7 +18,15 @@ from baseline.relation_cgeom.eeg_models.three_branch.variable_channel_frontend i
     VariableChannelFilterBankComplexGeomBranch,
     VariableChannelRawBranch,
 )
+from baseline.relation_cgeom.eeg_models.three_branch.spectral_lite import (
+    SetupConditionedSpectralSelector,
+    SimpleFinalFusionGate,
+    SpectralChannelAggregator,
+    SpectralPerChannelMixer,
+    SpectralTokenizer,
+)
 from baseline.relation_cgeom.encoder_three_branch import generate_binomial_mask, generate_continuous_mask
+from baseline.relation_cgeom.heegnet_lorentz import LorentzCentroidRelation
 from baseline.relation_cgeom.losses_complex_geom import complex_avg_pool1d
 
 
@@ -60,6 +68,15 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
         use_variable_channel_frontend=False,
         per_channel_stem_depth=2,
         channel_attn_heads=4,
+        architecture='default',
+        spectral_dims=64,
+        spectral_win_len=64,
+        spectral_stride=32,
+        spectral_freq_low=4.0,
+        spectral_freq_high=40.0,
+        spectral_mixer_depth=1,
+        use_heegnet_lorentz=False,
+        heegnet_lorentz_dim=65,
         mask_mode='binomial',
     ):
         super().__init__()
@@ -75,9 +92,19 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
         self.use_hyper_relation = use_hyper_relation and use_hyperbolic_branch
         self.use_setup_conditioned = bool(use_setup_conditioned)
         self.use_variable_channel_frontend = bool(use_variable_channel_frontend)
+        self.architecture = str(architecture)
+        self.use_spectral_lite = self.architecture == 'spectral_lite'
         self.setup_dim = int(setup_dim)
         self.per_channel_stem_depth = int(per_channel_stem_depth)
         self.channel_attn_heads = int(channel_attn_heads)
+        self.spectral_dims = int(spectral_dims)
+        self.spectral_win_len = int(spectral_win_len)
+        self.spectral_stride = int(spectral_stride)
+        self.spectral_freq_low = float(spectral_freq_low)
+        self.spectral_freq_high = float(spectral_freq_high)
+        self.spectral_mixer_depth = int(spectral_mixer_depth)
+        self.use_heegnet_lorentz = bool(use_heegnet_lorentz)
+        self.heegnet_lorentz_dim = int(heegnet_lorentz_dim)
         self.use_gated_raw_residual = use_gated_raw_residual
         self.use_gated_complex_residual = use_gated_complex_residual
         self.local_fusion_type = local_fusion_type
@@ -106,7 +133,9 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
             dropout=0.1,
         )
 
-        if not config.use_complex_branch:
+        if self.architecture not in {'default', 'spectral_lite'}:
+            raise ValueError(f'Unknown relation-CGeom architecture: {self.architecture}')
+        if not self.use_spectral_lite and not config.use_complex_branch:
             raise ValueError('The cgeom-aligned hyp_relation encoder requires the complex branch.')
         if self.use_setup_conditioned and not config.use_raw_branch:
             raise ValueError('Setup-conditioned relation-CGeom requires the raw branch.')
@@ -114,8 +143,26 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
             raise ValueError('Setup-conditioned relation-CGeom requires the hyperbolic relation path.')
         if self.use_variable_channel_frontend and not self.use_setup_conditioned:
             raise ValueError('Variable-channel frontend requires the setup-conditioned relation-CGeom path.')
+        if self.use_spectral_lite and not self.use_setup_conditioned:
+            raise ValueError('spectral_lite requires SetupEncoder.')
+        if self.use_spectral_lite and not self.use_variable_channel_frontend:
+            raise ValueError('spectral_lite requires the variable-channel frontend.')
+        if self.use_heegnet_lorentz and not self.use_spectral_lite:
+            raise ValueError('Minimal HEEGNet-Lorentz integration is only enabled for spectral_lite.')
+        if self.use_heegnet_lorentz and self.heegnet_lorentz_dim <= 2:
+            raise ValueError(f'heegnet_lorentz_dim must be >= 3, got {self.heegnet_lorentz_dim}')
 
-        if self.use_variable_channel_frontend:
+        if self.use_spectral_lite:
+            self.raw_branch = VariableChannelRawBranch(
+                repr_dims=output_dims,
+                hidden_dims=hidden_dims,
+                setup_dim=setup_dim,
+                channel_vocab_size=setup_channel_vocab_size,
+                channel_attn_heads=channel_attn_heads,
+                per_channel_stem_depth=per_channel_stem_depth,
+            )
+            self.complex_branch = None
+        elif self.use_variable_channel_frontend:
             self.raw_branch = VariableChannelRawBranch(
                 repr_dims=output_dims,
                 hidden_dims=hidden_dims,
@@ -234,39 +281,105 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
                 sampling_rate=sampling_rate,
                 bands=self.bands,
             )
-            raw_condition_dim = output_dims if self.use_variable_channel_frontend else input_dims
-            self.raw_conditioner = RawConditioner(feature_dim=raw_condition_dim, setup_dim=setup_dim, scale=setup_condition_scale)
-            self.setup_token_global = nn.Sequential(
-                nn.LayerNorm(setup_dim + setup_meta_dim),
-                nn.Linear(setup_dim + setup_meta_dim, output_dims),
-                nn.GELU(),
-                nn.Linear(output_dims, output_dims),
-            )
-            self.setup_token_fine = nn.Sequential(
-                nn.LayerNorm(setup_dim + setup_ctx_dim),
-                nn.Linear(setup_dim + setup_ctx_dim, output_dims),
-                nn.GELU(),
-                nn.Linear(output_dims, output_dims),
-            )
-            self.setup_band_fusion = SetupConditionedBandFusion(
-                repr_dims=output_dims,
-                setup_dim=setup_dim,
-                num_bands=len(self.bands),
-            )
             self.global_relation_path = GlobalRelationPath(
                 repr_dims=output_dims,
                 depth=config.hyperbolic_depth,
                 curvature=config.hyperbolic_curvature,
                 learnable_curvature=config.learnable_curvature,
             )
-            self.fine_relation_path = FineRelationPath(
-                repr_dims=output_dims,
-                depth=config.hyperbolic_depth,
-                curvature=config.hyperbolic_curvature,
-                learnable_curvature=config.learnable_curvature,
-            )
-            self.relation_fusion_gate = RelationFusionGate(repr_dims=output_dims, setup_dim=setup_dim)
-            self.final_fusion_gate = FinalFusionGate(repr_dims=output_dims, setup_dim=setup_dim)
+            if self.use_spectral_lite:
+                # spectral_lite keeps setup as a lightweight conditioning signal:
+                # channel aggregation, spectral token selection, and the single
+                # global relation token. It removes RawConditioner, band fusion,
+                # fine relation, and relation fusion hierarchy.
+                self.raw_conditioner = None
+                self.setup_token_global = None
+                self.setup_token_fine = None
+                self.setup_band_fusion = None
+                self.fine_relation_path = None
+                self.relation_fusion_gate = None
+                self.final_fusion_gate = None
+                self.spectral_setup_token = nn.Sequential(
+                    nn.LayerNorm(setup_meta_dim + setup_ctx_dim + setup_dim),
+                    nn.Linear(setup_meta_dim + setup_ctx_dim + setup_dim, output_dims),
+                    nn.GELU(),
+                    nn.Linear(output_dims, output_dims),
+                )
+                self.spectral_tokenizer = SpectralTokenizer(
+                    spec_dims=self.spectral_dims,
+                    win_len=self.spectral_win_len,
+                    stride=self.spectral_stride,
+                    sampling_rate=sampling_rate,
+                    freq_low=self.spectral_freq_low,
+                    freq_high=self.spectral_freq_high,
+                )
+                self.spectral_backbone = SpectralPerChannelMixer(
+                    spec_dims=self.spectral_dims,
+                    depth=self.spectral_mixer_depth,
+                    dropout=0.1,
+                )
+                self.spectral_channel_aggregator = SpectralChannelAggregator(
+                    feature_dim=self.spectral_dims,
+                    setup_dim=setup_dim,
+                    channel_vocab_size=setup_channel_vocab_size,
+                    num_heads=channel_attn_heads,
+                    dropout=0.1,
+                )
+                self.spectral_selector = SetupConditionedSpectralSelector(
+                    spec_dims=self.spectral_dims,
+                    repr_dims=output_dims,
+                    setup_dim=setup_dim,
+                    dropout=0.1,
+                )
+                self.lorentz_relation = (
+                    LorentzCentroidRelation(
+                        repr_dims=output_dims,
+                        lorentz_dim=self.heegnet_lorentz_dim,
+                        curvature=config.hyperbolic_curvature,
+                        learnable_curvature=config.learnable_curvature,
+                    )
+                    if self.use_heegnet_lorentz else None
+                )
+                self.spectral_final_fusion_gate = SimpleFinalFusionGate(repr_dims=output_dims)
+            else:
+                raw_condition_dim = output_dims if self.use_variable_channel_frontend else input_dims
+                self.raw_conditioner = RawConditioner(
+                    feature_dim=raw_condition_dim,
+                    setup_dim=setup_dim,
+                    scale=setup_condition_scale,
+                )
+                self.setup_token_global = nn.Sequential(
+                    nn.LayerNorm(setup_dim + setup_meta_dim),
+                    nn.Linear(setup_dim + setup_meta_dim, output_dims),
+                    nn.GELU(),
+                    nn.Linear(output_dims, output_dims),
+                )
+                self.setup_token_fine = nn.Sequential(
+                    nn.LayerNorm(setup_dim + setup_ctx_dim),
+                    nn.Linear(setup_dim + setup_ctx_dim, output_dims),
+                    nn.GELU(),
+                    nn.Linear(output_dims, output_dims),
+                )
+                self.setup_band_fusion = SetupConditionedBandFusion(
+                    repr_dims=output_dims,
+                    setup_dim=setup_dim,
+                    num_bands=len(self.bands),
+                )
+                self.fine_relation_path = FineRelationPath(
+                    repr_dims=output_dims,
+                    depth=config.hyperbolic_depth,
+                    curvature=config.hyperbolic_curvature,
+                    learnable_curvature=config.learnable_curvature,
+                )
+                self.relation_fusion_gate = RelationFusionGate(repr_dims=output_dims, setup_dim=setup_dim)
+                self.final_fusion_gate = FinalFusionGate(repr_dims=output_dims, setup_dim=setup_dim)
+                self.spectral_setup_token = None
+                self.spectral_tokenizer = None
+                self.spectral_backbone = None
+                self.spectral_channel_aggregator = None
+                self.spectral_selector = None
+                self.spectral_final_fusion_gate = None
+                self.lorentz_relation = None
         else:
             self.setup_encoder = None
             self.raw_conditioner = None
@@ -277,6 +390,13 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
             self.fine_relation_path = None
             self.relation_fusion_gate = None
             self.final_fusion_gate = None
+            self.spectral_setup_token = None
+            self.spectral_tokenizer = None
+            self.spectral_backbone = None
+            self.spectral_channel_aggregator = None
+            self.spectral_selector = None
+            self.spectral_final_fusion_gate = None
+            self.lorentz_relation = None
 
     def _resolve_mask(self, x, mask):
         if mask is None:
@@ -445,6 +565,103 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
             return raw_residual
         return complex_residual
 
+    def forward_spectral_lite(self, x, x_full, mask, nan_mask, setup=None, return_aux=False):
+        """Raw backbone + spectral token branch + single global relation.
+
+        x/x_full: [B, T, C]
+        h_raw: [B, T, D]
+        raw_residual: [B, T, 2D]
+        spec_global: [B, D]
+        relation_global: [B, D]
+        main_repr: [B, T, 2D]
+        """
+        setup_out = self.setup_encoder(x_full, mask=nan_mask, setup=setup)
+        z_meta = setup_out['z_meta']  # [B, setup_meta_dim]
+        z_ctx = setup_out['z_ctx']  # [B, setup_ctx_dim]
+        z_setup = setup_out['z_setup']  # [B, setup_dim]
+        channel_ids = None if setup is None else setup.get('channel_ids')
+
+        # Raw is the main discriminative path. It remains variable-channel via
+        # shared per-channel encoding + setup-conditioned channel attention.
+        h_raw, raw_frontend_aux = self.raw_branch(x, channel_ids, z_setup)  # [B, T, D]
+        h_raw = h_raw.masked_fill(~mask.unsqueeze(-1), 0)
+        raw_global = self.masked_mean_pool(h_raw, mask)  # [B, D]
+        raw_residual = self.build_raw_residual(h_raw)  # [B, T, 2D]
+
+        # Lightweight learnable spectral tokens replace the old fixed 3-band
+        # heavy complex hierarchy.
+        spec_tokens, spec_mask = self.spectral_tokenizer(x, mask=mask)  # [B, C, Nw, Ds], [B, Nw]
+        h_spec_ch = self.spectral_backbone(spec_tokens)  # [B, C, Nw, Ds]
+        h_spec, spec_channel_attn, _ = self.spectral_channel_aggregator(
+            h_spec_ch,
+            channel_ids,
+            z_setup,
+        )  # [B, Nw, Ds], [B, H, Nw, C]
+        spec_out = self.spectral_selector(h_spec, z_setup, spec_mask)
+        spec_global = spec_out['spec_global']  # [B, D]
+
+        setup_token = self.spectral_setup_token(torch.cat([z_meta, z_ctx, z_setup], dim=-1))  # [B, D]
+        if self.use_heegnet_lorentz and self.lorentz_relation is not None:
+            relation_global, lorentz_aux = self.lorentz_relation(
+                raw_global,
+                spec_global,
+                setup_token,
+            )  # relation_global: [B, D]
+        else:
+            relation_global = self.global_relation_path(raw_global, spec_global, setup_token)  # [B, D]
+            lorentz_aux = {}
+        rel_residual = self.proj_rel(self.rel_fusion_norm(relation_global)).unsqueeze(1)  # [B, 1, 2D]
+        main_repr, alpha = self.spectral_final_fusion_gate(
+            raw_residual,
+            rel_residual,
+            raw_global,
+            spec_global,
+            relation_global,
+        )  # [B, T, 2D], [B, 1]
+        main_global = self.masked_mean_pool(main_repr, mask)  # [B, 2D]
+
+        aux = {
+            'main_repr': main_repr,
+            'main_global': main_global,
+            'relation_global': relation_global,
+            'local_repr': raw_residual.detach() if raw_residual is not None else None,
+            'raw_align': self.raw_align_proj(raw_global),
+            # Kept for compatibility with older pretraining utilities that
+            # expect this key; in spectral_lite it represents spectral-global
+            # alignment instead of complex-global alignment.
+            'complex_align': spec_global,
+            'z_meta': z_meta.detach(),
+            'z_ctx': z_ctx.detach(),
+            'z_setup': z_setup.detach(),
+            'channel_name_emb_summary': setup_out['channel_name_emb_summary'].detach(),
+            'channel_count': setup_out['channel_count'].detach(),
+            'setup_token_global': setup_token.detach(),
+            'setup_token_fine': None,
+            'raw_global': raw_global.detach(),
+            'spec_global': spec_global.detach(),
+            'complex_global': spec_global.detach(),
+            'band_globals': [],
+            'global_relation_repr': relation_global.detach(),
+            'fine_relation_repr': None,
+            'debug_relation_global': relation_global.detach(),
+            'relation_condition': rel_residual.detach(),
+            'alpha': torch.ones_like(alpha).detach(),
+            'beta': alpha.detach(),
+            'w_g': torch.ones_like(alpha).detach(),
+            'w_f': torch.zeros_like(alpha).detach(),
+            'raw_channel_attn_weights': raw_frontend_aux.get('raw_channel_attn_weights'),
+            'spec_channel_attn': spec_channel_attn.detach(),
+            'spec_token_gate': spec_out['spec_token_gate'],
+            'spec_mask': spec_mask.detach(),
+        }
+        aux.update({
+            'raw_h': lorentz_aux.get('raw_h'),
+            'spec_h': lorentz_aux.get('spec_h'),
+            'setup_h': lorentz_aux.get('setup_h'),
+            'relation_h': lorentz_aux.get('relation_h'),
+        })
+        return aux if return_aux else main_repr
+
     def forward_setup_conditioned(self, x, x_full, mask, nan_mask, setup=None, return_aux=False):
         """Setup-Conditioned Hierarchical Relation-CGeom forward path.
 
@@ -554,6 +771,21 @@ class TSEncoderThreeBranchHypRelationCGeom(nn.Module):
         mask = self._resolve_mask(x, mask)
         mask &= nan_mask
         x[~mask] = 0
+
+        if self.use_spectral_lite:
+            out = self.forward_spectral_lite(
+                x=x,
+                x_full=x_full,
+                mask=mask,
+                nan_mask=nan_mask,
+                setup=setup,
+                return_aux=True,
+            )
+            main_repr = self.repr_dropout(out['main_repr'])
+            main_repr[~nan_mask] = 0
+            out['main_repr'] = main_repr
+            out['main_global'] = self.masked_mean_pool(main_repr, mask)  # [B, 2D]
+            return out if return_aux else main_repr
 
         if self.use_setup_conditioned:
             out = self.forward_setup_conditioned(

@@ -1,0 +1,97 @@
+# EEGPT + SEED standalone downstream config
+seed: 42
+master_port: 52242
+multitask: false
+model_type: eegpt
+fs: 256
+
+data:
+  batch_size: 32
+  num_workers: 4
+  datasets:
+    seed: finetune
+
+model:
+  pretrained_path: null
+
+  classifier_head:
+    head_type: avg_pool
+    hidden_dims: [128]
+    dropout: 0.3
+    attn_n_head: 4
+    attn_head_dim: 64
+    fusion_mode: dual
+    fusion_n_head: 4
+    fusion_head_dim: 64
+    fusion_use_rope: true
+    fusion_rope_theta: 10000.0
+    fusion_max_seq_len: 1024
+
+  patch_size: 64
+  patch_stride: 32
+  embed_num: 4
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 4.0
+
+  dropout_rate: 0.1
+  attn_dropout_rate: 0.1
+  drop_path_rate: 0.1
+
+  init_std: 0.02
+  qkv_bias: true
+
+  use_channel_conv: false
+  conv_chan_dim: 58
+
+  linear_probe1_dim: 16
+  linear_probe1_max_norm: 1.0
+  linear_probe2_max_norm: 0.25
+
+training:
+  max_epochs: 50
+  weight_decay: 0.01
+  max_grad_norm: 3.0
+
+  lr_schedule: onecycle
+  max_lr: 5e-4
+  encoder_lr_scale: 0.1
+  warmup_epochs: 5
+  warmup_scale: 1e-2
+  pct_start: 0.2
+  min_lr: 1e-6
+
+  freeze_encoder: true
+  use_amp: true
+  label_smoothing: 0.0
+
+  lora:
+    use_lora: false
+    lora_r: 8
+    lora_alpha: 16
+    lora_dropout: 0.0
+    lora_target_modules: [default]
+    lora_exclude_modules: null
+    lora_target_type: default
+    lora_scope: transformer
+    lora_lr_scale: 1.0
+
+logging:
+  experiment_name: eegpt_seed
+  run_dir: assets/run2
+  run_group: eegpt_seed
+  use_cloud: false
+  cloud_backend: wandb
+  project: eegpt
+  entity: null
+  api_key: null
+  offline: true
+  tags: [eegpt, seed]
+  log_step_interval: 10
+  ckpt_interval: 1
+  save_best_only: true
+  save_last_checkpoint: true
+  monitor_split: eval
+  monitor_metric: balanced_acc
+  monitor_mode: max
